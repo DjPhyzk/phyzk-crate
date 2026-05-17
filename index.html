@@ -1636,7 +1636,16 @@ function play(t) {
   drawWheel();
 }
 
-function playNext() { stepCurrent(1); }
+function playNext() {
+  // When the Similar tab is active, advance into the rabbit hole:
+  // the top match for the current track. Otherwise step through the queue.
+  const activeTab = document.querySelector('.tab.active')?.dataset.tab;
+  if (activeTab === 'similar' && STATE.current) {
+    const ranked = findSimilar(STATE.current, 1);
+    if (ranked.length) { play(ranked[0].track); return; }
+  }
+  stepCurrent(1);
+}
 function playPrev() { stepCurrent(-1); }
 function stepCurrent(delta) {
   if (!STATE.current || !STATE.filtered.length) return;
