@@ -111,14 +111,21 @@
     text-transform: uppercase; letter-spacing: 0.06em;
   }
 
-  /* ---------- Body 2-col ---------- */
+  /* ---------- Body single-column ---------- */
   .body {
-    display: grid;
-    grid-template-columns: minmax(420px, 1fr) 1fr;
+    display: flex;
     overflow: hidden;
   }
-  .pane { overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
-  .pane-left { border-right: 1px solid var(--border); }
+  .pane {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+    max-width: 1100px;
+    margin: 0 auto;
+    width: 100%;
+  }
 
   /* ---------- Now Playing ---------- */
   .now-playing {
@@ -499,15 +506,6 @@
     width: 12px; height: 12px; border-radius: 3px;
   }
 
-  /* ---------- Airtable iframe ---------- */
-  .airtable-frame { flex: 1; border: none; background: var(--bg); width: 100%; }
-  .airtable-placeholder {
-    flex: 1; display: grid; place-items: center;
-    color: var(--text-faint); text-align: center; padding: 32px;
-  }
-  .airtable-placeholder p { max-width: 320px; line-height: 1.5; }
-  .airtable-placeholder .btn { margin-top: 16px; }
-
   /* ---------- Loading ---------- */
   .loading {
     display: flex; align-items: center; gap: 10px;
@@ -552,7 +550,7 @@
   </div>
 
   <div class="body">
-    <div class="pane pane-left">
+    <div class="pane">
       <div class="now-playing" id="now-playing">
         <div class="np-empty">Pick a track from the queue to start playing</div>
       </div>
@@ -678,15 +676,6 @@
       </div>
     </div>
 
-    <div class="pane pane-right" id="pane-right">
-      <div class="airtable-placeholder" id="airtable-placeholder">
-        <div>
-          <p>Paste your Airtable embed URL in Settings to dock the relational database here.</p>
-          <button class="btn btn-primary" id="placeholder-settings-btn">Open settings</button>
-        </div>
-      </div>
-      <iframe class="airtable-frame" id="airtable-frame" style="display:none;"></iframe>
-    </div>
   </div>
 
   <div class="status-bar">
@@ -710,11 +699,6 @@
     <div class="form-row">
       <label>Airtable Personal Access Token</label>
       <input class="input" type="password" id="cfg-pat" placeholder="pat..." autocomplete="off" />
-    </div>
-    <div class="form-row">
-      <label>Airtable Embed URL (optional)</label>
-      <input class="input" type="url" id="cfg-iframe" placeholder="https://airtable.com/embed/..." />
-      <div class="hint">Interface → Share → Embed this view → copy URL. Leave empty to hide the right pane.</div>
     </div>
     <div class="form-row">
       <label>Base ID · Table ID</label>
@@ -802,39 +786,22 @@ function saveCfg(cfg) {
 const modal = document.getElementById('settings-modal');
 function openSettings() {
   document.getElementById('cfg-pat').value = STATE.cfg.pat || '';
-  document.getElementById('cfg-iframe').value = STATE.cfg.iframeUrl || '';
   document.getElementById('cfg-base').value =
     `${STATE.cfg.baseId || 'app6VzFBK4YEvHJ3H'}/${STATE.cfg.tableId || 'tblX6RH8URgzxs3ty'}`;
   modal.classList.remove('hidden');
 }
 function closeSettings() { modal.classList.add('hidden'); }
 document.getElementById('settings-btn').onclick = openSettings;
-document.getElementById('placeholder-settings-btn').onclick = openSettings;
 document.getElementById('settings-cancel').onclick = closeSettings;
 document.getElementById('settings-save').onclick = () => {
   const pat = document.getElementById('cfg-pat').value.trim();
-  const iframeUrl = document.getElementById('cfg-iframe').value.trim();
   const baseInput = document.getElementById('cfg-base').value.trim().split('/');
   const baseId = baseInput[0] || 'app6VzFBK4YEvHJ3H';
   const tableId = baseInput[1] || 'tblX6RH8URgzxs3ty';
-  saveCfg({ pat, iframeUrl, baseId, tableId });
+  saveCfg({ pat, baseId, tableId });
   closeSettings();
-  applyIframe();
   if (pat) loadAll();
 };
-
-function applyIframe() {
-  const frame = document.getElementById('airtable-frame');
-  const placeholder = document.getElementById('airtable-placeholder');
-  if (STATE.cfg.iframeUrl) {
-    frame.src = STATE.cfg.iframeUrl;
-    frame.style.display = '';
-    placeholder.style.display = 'none';
-  } else {
-    frame.style.display = 'none';
-    placeholder.style.display = '';
-  }
-}
 
 // ===========================================================================
 //  Airtable fetch
@@ -1720,7 +1687,6 @@ function setStatus(msg, isError = false) {
 //  Boot
 // ===========================================================================
 async function boot() {
-  applyIframe();
   drawWheel();
   // Always try static tracks.json first — works for public embeds with zero config.
   await loadStaticTracks();
