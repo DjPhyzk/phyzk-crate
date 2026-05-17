@@ -862,10 +862,35 @@ function camelotCompatible(c) {
 // ===========================================================================
 const EXCLUDE_PATTERNS = [
   /healer\s*trio/i,
+  /original\s*songs\s*of\s*the\s*life\s*cycle/i,
 ];
 function isExcluded(text) {
   if (!text) return false;
   return EXCLUDE_PATTERNS.some(re => re.test(text));
+}
+
+// Once both tracks and playlists are loaded, drop any track that belongs to
+// an excluded playlist by URL or id (the playlist name is the only signal
+// — track titles in those playlists usually don't contain the playlist name).
+function removeExcludedPlaylistTracks() {
+  const excludedUrls = new Set();
+  const excludedIds = new Set();
+  for (const pl of STATE.playlists) {
+    if (!isExcluded(pl.name)) continue;
+    for (const t of pl.tracks || []) {
+      if (typeof t === 'string') excludedUrls.add(t);
+      else {
+        if (t.url) excludedUrls.add(t.url);
+        if (t.id) excludedIds.add(String(t.id));
+      }
+    }
+  }
+  if (excludedUrls.size === 0 && excludedIds.size === 0) return 0;
+  const before = STATE.tracks.length;
+  STATE.tracks = STATE.tracks.filter(t =>
+    !excludedUrls.has(t.url) && !excludedIds.has(String(t.id))
+  );
+  return before - STATE.tracks.length;
 }
 
 // ===========================================================================
@@ -1014,8 +1039,10 @@ async function loadPlaylistsCatalog() {
     if (!r.ok) return;
     const data = await r.json();
     if (Array.isArray(data)) {
-      STATE.playlists = data.filter(p => !isExcluded(p.name));
-      console.log(`Loaded ${STATE.playlists.length}/${data.length} SoundCloud playlists`);
+      // Keep the full list — renderPlaylists filters out excluded ones for display,
+      // but removeExcludedPlaylistTracks needs to see them to drop their member tracks.
+      STATE.playlists = data;
+      console.log(`Loaded ${data.length} SoundCloud playlists`);
     }
   } catch (e) {
     console.warn('playlists.json not loaded:', e);
@@ -1072,6 +1099,7 @@ async function loadAll() {
     const [recs, tagRecs, sessRecs] = await Promise.all([tracksP, tagsP, sessP]);
 
     STATE.tracks = recs.map(normalizeTrack).filter(t => !isExcluded(t.title));
+    removeExcludedPlaylistTracks();
     if (tagRecs) {
       STATE.tagsById = new Map(tagRecs.map(r => [r.id, {
         name: r.fields.Tag || '(unnamed)',
@@ -1731,8 +1759,9 @@ function renderPlaylists() {
   const F = STATE.filters;
 
   // 1. Scraped SoundCloud sets & albums — one card per playlist, click loads as queue
-  if (STATE.playlists.length > 0) {
-    const cards = STATE.playlists.map(pl => {
+  const visiblePlaylists = STATE.playlists.filter(p => !isExcluded(p.name));
+  if (visiblePlaylists.length > 0) {
+    const cards = visiblePlaylists.map(pl => {
       const playable = resolvePlaylistTracks(pl.tracks).size;
       const subParts = [pl.type, `${pl.track_count} tracks`];
       if (playable !== pl.track_count) subParts.push(`${playable} playable`);
@@ -1746,7 +1775,7 @@ function renderPlaylists() {
       });
     });
     el.appendChild(makePlaylistSection(
-      `SoundCloud sets & albums (${STATE.playlists.length})`,
+      `SoundCloud sets & albums (${visiblePlaylists.length})`,
       cards,
       { href: 'https://soundcloud.com/dj-phyzk/sets', text: 'view all on soundcloud ↗' },
     ));
@@ -2077,6 +2106,12 @@ async function boot() {
   drawWheel();
   // Static catalog + scraped SoundCloud playlists load in parallel (independent).
   await Promise.all([loadStaticTracks(), loadPlaylistsCatalog()]);
+  const removed = removeExcludedPlaylistTracks();
+  if (removed > 0) {
+    document.getElementById('track-count').textContent = `${STATE.tracks.length} tracks`;
+    rebuildFilters();
+    applyFilters();
+  }
   renderPlaylists();
   // If the user has a PAT, refresh with live Airtable data (gets tags + session names).
   if (STATE.cfg.pat) loadAll();
