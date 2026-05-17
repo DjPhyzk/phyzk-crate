@@ -568,7 +568,7 @@
 
       <div class="tab-panel active" data-tab="queue">
         <div id="queue-content">
-          <div class="loading"><div class="spinner"></div> Waiting for Airtable credentials…</div>
+          <div class="loading"><div class="spinner"></div> Loading catalog…</div>
         </div>
       </div>
 
@@ -700,8 +700,9 @@
   <div class="modal">
     <h2>Settings</h2>
     <p>
-      Credentials are stored locally in your browser (<code>localStorage</code>) and never transmitted anywhere except Airtable.
-      Create a personal access token at
+      The player works without any credentials — it loads from the static <code>tracks.json</code> catalog.
+      Adding an Airtable token enables live data with tag and session names. Credentials are stored only
+      in your browser's <code>localStorage</code>. Create a token at
       <a href="https://airtable.com/create/tokens" target="_blank">airtable.com/create/tokens</a>
       with scopes <code>data.records:read</code> and <code>schema.bases:read</code> for base
       <code>app6VzFBK4YEvHJ3H</code>.
@@ -880,11 +881,70 @@ function normalizeTrack(r) {
   };
 }
 
+function normalizeJsonTrack(t) {
+  // Shape from tracks.json (Essentia analyzer output)
+  const key = t.key, scale = t.scale;
+  return {
+    id: t.id || t.url,
+    title: t.title || '(untitled)',
+    artists: [],
+    url: t.url || '',
+    uploadDate: formatJsonDate(t.upload_date),
+    duration: t.duration_s || 0,
+    bpm: t.bpm || 0,
+    key, scale,
+    camelot: camelotOf(key, scale),
+    energy: t.energy || 0,
+    danceability: t.danceability || 0,
+    loudness: t.loudness_lufs || 0,
+    spectralCentroid: t.spectral_centroid || 0,
+    tags: [],
+    session: [],
+  };
+}
+
+function formatJsonDate(s) {
+  if (!s) return '';
+  // tracks.json uses YYYYMMDD; Airtable uses YYYY-MM-DD
+  if (/^\d{8}$/.test(s)) return `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+  return s;
+}
+
+async function loadStaticTracks() {
+  // Public fallback: load whatever ships in tracks.json. Works with zero config.
+  try {
+    let r = await fetch('tracks.json');
+    if (!r.ok) r = await fetch('../tracks.json');
+    if (!r.ok) return false;
+    const data = await r.json();
+    if (!Array.isArray(data) || data.length === 0) return false;
+
+    STATE.tracks = data.map(normalizeJsonTrack);
+    STATE.mfccById = new Map();
+    for (let i = 0; i < data.length; i++) {
+      if (data[i].mfcc_mean) STATE.mfccById.set(STATE.tracks[i].id, data[i].mfcc_mean);
+    }
+
+    document.getElementById('track-count').textContent = `${STATE.tracks.length} tracks`;
+    setStatus(`${STATE.tracks.length} tracks loaded from static catalog`);
+    rebuildFilters();
+    applyFilters();
+    drawWheel();
+    return true;
+  } catch (e) {
+    console.warn('loadStaticTracks failed:', e);
+    return false;
+  }
+}
+
 async function loadAll() {
   if (!STATE.cfg.pat) { openSettings(); return; }
   setStatus('Loading from Airtable…');
-  document.getElementById('queue-content').innerHTML =
-    '<div class="loading"><div class="spinner"></div> Loading from Airtable…</div>';
+  // Only show the loading state if we have no tracks yet (preserve static view otherwise)
+  if (STATE.tracks.length === 0) {
+    document.getElementById('queue-content').innerHTML =
+      '<div class="loading"><div class="spinner"></div> Loading from Airtable…</div>';
+  }
   try {
     // Tracks is mandatory; Tags + Sessions are optional (best-effort, don't fail loadAll if missing).
     const tracksP = fetchTable(STATE.cfg.baseId, STATE.cfg.tableId, STATE.cfg.pat);
@@ -918,9 +978,12 @@ async function loadAll() {
     drawWheel();
   } catch (e) {
     console.error(e);
-    setStatus(`Error: ${e.message}`, true);
-    document.getElementById('queue-content').innerHTML =
-      `<div class="loading">Could not load tracks. Check your PAT in Settings.<br><small>${e.message}</small></div>`;
+    setStatus(`Airtable error — using static catalog: ${e.message}`, true);
+    // Only wipe the queue if we have no static fallback either
+    if (STATE.tracks.length === 0) {
+      document.getElementById('queue-content').innerHTML =
+        `<div class="loading">Could not load tracks. Check your PAT in Settings.<br><small>${e.message}</small></div>`;
+    }
   }
 }
 
@@ -1656,14 +1719,13 @@ function setStatus(msg, isError = false) {
 // ===========================================================================
 //  Boot
 // ===========================================================================
-function boot() {
+async function boot() {
   applyIframe();
   drawWheel();
-  if (!STATE.cfg.pat) {
-    openSettings();
-  } else {
-    loadAll();
-  }
+  // Always try static tracks.json first — works for public embeds with zero config.
+  await loadStaticTracks();
+  // If the user has a PAT, refresh with live Airtable data (gets tags + session names).
+  if (STATE.cfg.pat) loadAll();
 }
 boot();
 </script>
