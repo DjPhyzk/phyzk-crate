@@ -1,0 +1,1671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>phyzk crate</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--
+  Setup
+  -----
+  1. cd /Users/phyzkalsciences/music_analysis/player && python3 -m http.server 8000
+  2. open http://localhost:8000
+  3. First load shows settings modal. Paste:
+       - Airtable PAT (https://airtable.com/create/tokens — scopes: data.records:read, schema.bases:read)
+       - Airtable embed URL (Interface → Share → Embed, or a shared view's embed URL)
+  4. tracks.json is auto-loaded from ../tracks.json for MFCC-based similarity (optional).
+
+  The relational database lives in the right pane (Airtable iframe).
+  The player + crate-digging tools live in the left pane.
+-->
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root {
+    --bg: #0a0a0c;
+    --bg-elev: #14141a;
+    --bg-elev-2: #1c1c25;
+    --bg-elev-3: #24242f;
+    --border: #2a2a36;
+    --border-bright: #3a3a48;
+    --text: #e8e8ed;
+    --text-dim: #8a8a98;
+    --text-faint: #5a5a68;
+    --accent: #00d4ff;
+    --accent-2: #ff00aa;
+    --accent-dim: rgba(0, 212, 255, 0.15);
+    --green: #00ff88;
+    --orange: #ffaa00;
+    --red: #ff3366;
+    --shadow: 0 8px 24px rgba(0,0,0,0.5);
+  }
+  html, body { height: 100%; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; }
+  button { font-family: inherit; cursor: pointer; }
+  input { font-family: inherit; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+
+  /* ---------- App shell ---------- */
+  .app {
+    display: grid;
+    grid-template-rows: 48px 1fr 24px;
+    height: 100vh;
+  }
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    font-weight: 700; letter-spacing: 0.06em; font-size: 14px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; color: transparent;
+  }
+  .header-actions { display: flex; gap: 8px; align-items: center; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+    width: 32px; height: 32px; border-radius: 6px;
+    display: grid; place-items: center;
+    transition: all 0.15s;
+    font-size: 16px;
+  }
+  .icon-btn:hover { color: var(--text); border-color: var(--accent); }
+  .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .icon-btn.playing { color: var(--accent); border-color: var(--accent); }
+  .filter-subgroup-label {
+    font-size: 9px; color: var(--text-faint);
+    margin: 10px 0 4px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  .filter-subgroup-label:first-child { margin-top: 0; }
+  .chip-scroll {
+    max-height: 200px; overflow-y: auto;
+    padding: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  .badge {
+    font-size: 10px; padding: 4px 10px; border-radius: 999px;
+    background: var(--bg-elev-2); color: var(--text-dim);
+    border: 1px solid var(--border);
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .status-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px;
+    background: var(--bg-elev);
+    border-top: 1px solid var(--border);
+    color: var(--text-faint); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+
+  /* ---------- Body 2-col ---------- */
+  .body {
+    display: grid;
+    grid-template-columns: minmax(420px, 1fr) 1fr;
+    overflow: hidden;
+  }
+  .pane { overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+  .pane-left { border-right: 1px solid var(--border); }
+
+  /* ---------- Now Playing ---------- */
+  .now-playing {
+    padding: 14px 16px 10px;
+    background: linear-gradient(180deg, rgba(0, 212, 255, 0.04) 0%, transparent 100%);
+    border-bottom: 1px solid var(--border);
+    min-height: 90px;
+  }
+  .np-empty {
+    color: var(--text-faint);
+    padding: 16px 0;
+    text-align: center;
+    font-size: 12px;
+  }
+  .np-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .np-meta {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin: 0 0 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .np-stats { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .stat {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: 4px;
+    background: var(--bg-elev-2); border: 1px solid var(--border);
+    font-size: 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .stat-label { color: var(--text-faint); }
+  .stat-key { color: var(--accent); font-weight: 700; }
+  .stat-bpm { color: var(--green); font-weight: 700; }
+  .stat-camelot { color: var(--orange); font-weight: 700; }
+  .stat-bars { display: flex; gap: 12px; margin-top: 10px; font-size: 10px; }
+  .bar-row { flex: 1; }
+  .bar-label {
+    color: var(--text-faint); margin-bottom: 3px;
+    display: flex; justify-content: space-between;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .bar-value { color: var(--text); font-family: ui-monospace, Menlo, monospace; }
+  .bar-track { height: 3px; background: var(--bg-elev-2); border-radius: 2px; overflow: hidden; }
+  .bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+
+  /* ---------- SoundCloud widget ---------- */
+  .sc-wrap {
+    padding: 0 16px 12px;
+  }
+  .sc-wrap iframe {
+    width: 100%; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg-elev); display: block;
+  }
+
+  /* ---------- Tabs ---------- */
+  .tabs {
+    display: flex; gap: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 0;
+    background: var(--bg-elev);
+    flex-shrink: 0;
+  }
+  .tab {
+    background: transparent; border: none; color: var(--text-dim);
+    padding: 12px 16px; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-count {
+    color: var(--text-faint); margin-left: 6px; font-size: 10px;
+    background: var(--bg-elev-2); padding: 1px 6px; border-radius: 999px;
+  }
+  .tab.active .tab-count { color: var(--accent); background: var(--accent-dim); }
+
+  .tab-panel {
+    display: none; flex: 1; overflow-y: auto;
+    min-height: 0;
+  }
+  .tab-panel.active { display: block; }
+  .tab-panel-inner { padding: 16px; }
+
+  /* ---------- Filter sections ---------- */
+  .filter-section { margin-bottom: 22px; }
+  .filter-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); margin-bottom: 8px; font-weight: 600;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .filter-label .filter-value {
+    color: var(--accent); font-family: ui-monospace, Menlo, monospace;
+    text-transform: none; letter-spacing: 0;
+  }
+  .input {
+    width: 100%; padding: 8px 12px; border-radius: 6px;
+    background: var(--bg-elev); border: 1px solid var(--border);
+    color: var(--text); font-size: 12px;
+  }
+  .input:focus { outline: none; border-color: var(--accent); }
+  .range-dual {
+    position: relative; height: 28px;
+    display: flex; align-items: center;
+  }
+  .range-dual input[type=range] {
+    position: absolute; left: 0; right: 0;
+    -webkit-appearance: none; appearance: none;
+    background: transparent; pointer-events: none;
+    width: 100%; height: 28px;
+  }
+  .range-dual input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    height: 14px; width: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    pointer-events: auto;
+    cursor: grab;
+    border: 2px solid var(--bg);
+  }
+  .range-dual input[type=range]::-moz-range-thumb {
+    height: 14px; width: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    pointer-events: auto;
+    cursor: grab;
+    border: 2px solid var(--bg);
+  }
+  .range-track-bg {
+    position: absolute; left: 0; right: 0;
+    height: 4px; background: var(--bg-elev-2); border-radius: 2px;
+    top: 50%; transform: translateY(-50%);
+  }
+  .range-track-fill {
+    position: absolute; height: 4px; background: var(--accent); border-radius: 2px;
+    top: 50%; transform: translateY(-50%);
+  }
+  .range-values {
+    display: flex; justify-content: space-between;
+    color: var(--text-faint); font-size: 10px; margin-top: 2px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .chip-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    background: var(--bg-elev); border: 1px solid var(--border); color: var(--text-dim);
+    padding: 4px 10px; border-radius: 999px; font-size: 11px;
+    cursor: pointer; transition: all 0.1s;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .chip:hover { color: var(--text); border-color: var(--border-bright); }
+  .chip.active {
+    background: var(--accent); color: var(--bg); border-color: var(--accent);
+    font-weight: 600;
+  }
+  .chip.compatible {
+    background: var(--accent-dim); color: var(--accent); border-color: var(--accent);
+  }
+  .filter-reset {
+    background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+    padding: 6px 12px; border-radius: 6px; font-size: 11px;
+    width: 100%; margin-top: 4px;
+  }
+  .filter-reset:hover { color: var(--text); border-color: var(--accent); }
+  .sort-row {
+    display: flex; gap: 6px; align-items: center; margin-bottom: 12px;
+    font-size: 11px;
+  }
+  .sort-row select {
+    flex: 1; padding: 6px 10px; border-radius: 6px;
+    background: var(--bg-elev); border: 1px solid var(--border);
+    color: var(--text); font-size: 11px;
+  }
+
+  /* ---------- Track list ---------- */
+  .track-list { display: flex; flex-direction: column; }
+  .track-list-header {
+    display: grid;
+    grid-template-columns: 28px 1fr 50px 50px 44px;
+    gap: 8px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-faint);
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+    background: var(--bg-elev);
+    position: sticky; top: 0; z-index: 1;
+  }
+  .track-list-header > div { cursor: pointer; }
+  .track-list-header > div:hover { color: var(--accent); }
+  .track-list-header .sorted { color: var(--accent); }
+  .track-row {
+    display: grid;
+    grid-template-columns: 28px 1fr 50px 50px 44px;
+    gap: 8px;
+    padding: 8px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.025);
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.08s;
+  }
+  .track-row:hover { background: var(--bg-elev); }
+  .track-row.playing {
+    background: var(--accent-dim);
+    border-left: 2px solid var(--accent);
+    padding-left: 12px;
+  }
+  .track-row.playing .track-title { color: var(--accent); font-weight: 600; }
+  .track-play-btn {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-elev-2); color: var(--text-dim);
+    display: grid; place-items: center;
+    font-size: 9px; padding-left: 1px;
+  }
+  .track-row:hover .track-play-btn {
+    background: var(--accent); color: var(--bg); border-color: var(--accent);
+  }
+  .track-row.playing .track-play-btn {
+    background: var(--accent); color: var(--bg); border-color: var(--accent);
+  }
+  .track-meta-col { min-width: 0; overflow: hidden; }
+  .track-title {
+    font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin: 0;
+  }
+  .track-sub {
+    font-size: 10px; color: var(--text-faint); margin-top: 1px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .track-camelot {
+    font-size: 10px; font-weight: 700; color: var(--orange);
+    text-align: center;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .track-bpm {
+    font-size: 11px; color: var(--green); font-weight: 600;
+    text-align: right;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .track-energy-cell {
+    text-align: right;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px; color: var(--text-dim);
+  }
+  .energy-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green); margin-right: 4px;
+    box-shadow: 0 0 6px currentColor;
+  }
+
+  /* ---------- Similar tab ---------- */
+  .similar-empty {
+    color: var(--text-faint); padding: 32px; text-align: center; font-size: 12px;
+  }
+  .similar-row {
+    display: grid;
+    grid-template-columns: 28px 1fr 50px 50px 44px;
+    gap: 8px;
+    padding: 8px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.025);
+    align-items: center;
+    cursor: pointer;
+  }
+  .similar-row:hover { background: var(--bg-elev); }
+  .similar-pct {
+    font-size: 11px; font-weight: 600; color: var(--accent);
+    text-align: right;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+
+  /* ---------- Modal ---------- */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.8);
+    backdrop-filter: blur(4px);
+    display: grid; place-items: center;
+    z-index: 100;
+  }
+  .modal-backdrop.hidden { display: none; }
+  .modal {
+    background: var(--bg-elev); border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 500px; max-width: 92vw; padding: 28px;
+    box-shadow: var(--shadow);
+  }
+  .modal h2 {
+    margin: 0 0 4px; font-size: 16px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; color: transparent;
+  }
+  .modal p {
+    margin: 0 0 20px; color: var(--text-dim); font-size: 12px; line-height: 1.5;
+  }
+  .modal p a { color: var(--accent); text-decoration: none; }
+  .modal p a:hover { text-decoration: underline; }
+  .form-row { margin-bottom: 14px; }
+  .form-row label {
+    display: block; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); margin-bottom: 6px; font-weight: 600;
+  }
+  .form-row .hint { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
+  .form-actions {
+    display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px;
+  }
+  .btn {
+    padding: 10px 16px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--bg-elev-2); color: var(--text);
+    cursor: pointer;
+  }
+  .btn:hover { border-color: var(--border-bright); }
+  .btn-primary {
+    background: var(--accent); color: var(--bg); border-color: var(--accent);
+  }
+  .btn-primary:hover { background: #00b8e0; border-color: #00b8e0; }
+
+  /* ---------- Camelot wheel ---------- */
+  .wheel-wrap {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 20px;
+  }
+  .wheel-svg {
+    width: 360px; height: 360px; max-width: 100%;
+    user-select: none;
+  }
+  .wheel-slice {
+    stroke: var(--bg); stroke-width: 2;
+    transition: all 0.2s;
+    cursor: pointer;
+  }
+  .wheel-slice.outer { fill: #1c2530; }   /* B (major) outer */
+  .wheel-slice.inner { fill: #251c25; }   /* A (minor) inner */
+  .wheel-slice:hover { filter: brightness(1.6); }
+  .wheel-slice.current {
+    fill: var(--accent) !important;
+    filter: drop-shadow(0 0 8px var(--accent));
+  }
+  .wheel-slice.compatible {
+    fill: rgba(0, 212, 255, 0.45);
+  }
+  .wheel-label {
+    fill: var(--text); font-size: 11px; font-weight: 700;
+    pointer-events: none; text-anchor: middle;
+    dominant-baseline: central;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .wheel-label.dim { fill: var(--text-faint); }
+  .wheel-center {
+    fill: var(--bg);
+    stroke: var(--border);
+    stroke-width: 1;
+  }
+  .wheel-center-text {
+    fill: var(--text-dim); font-size: 9px;
+    text-anchor: middle; dominant-baseline: central;
+    text-transform: uppercase; letter-spacing: 0.1em;
+  }
+  .wheel-legend {
+    margin-top: 16px; display: flex; gap: 16px; font-size: 11px; color: var(--text-dim);
+  }
+  .wheel-legend-item { display: flex; align-items: center; gap: 6px; }
+  .wheel-legend-swatch {
+    width: 12px; height: 12px; border-radius: 3px;
+  }
+
+  /* ---------- Airtable iframe ---------- */
+  .airtable-frame { flex: 1; border: none; background: var(--bg); width: 100%; }
+  .airtable-placeholder {
+    flex: 1; display: grid; place-items: center;
+    color: var(--text-faint); text-align: center; padding: 32px;
+  }
+  .airtable-placeholder p { max-width: 320px; line-height: 1.5; }
+  .airtable-placeholder .btn { margin-top: 16px; }
+
+  /* ---------- Loading ---------- */
+  .loading {
+    display: flex; align-items: center; gap: 10px;
+    color: var(--text-dim); font-size: 12px; padding: 32px;
+    justify-content: center;
+  }
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- Toast ---------- */
+  .toast {
+    position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+    background: var(--bg-elev-3); border: 1px solid var(--border);
+    color: var(--text); padding: 10px 16px; border-radius: 8px;
+    font-size: 12px;
+    box-shadow: var(--shadow);
+    z-index: 200;
+    opacity: 0; transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+  }
+  .toast.visible { opacity: 1; transform: translateX(-50%) translateY(-8px); }
+  .toast.error { border-color: var(--red); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <div class="logo">phyzk crate</div>
+    <div class="header-actions">
+      <span class="badge" id="track-count">— tracks</span>
+      <button class="icon-btn" id="prev-btn" title="Previous (←)">⏮</button>
+      <button class="icon-btn" id="playpause-btn" title="Play / Pause (space)">▶</button>
+      <button class="icon-btn" id="next-btn" title="Next (→)">⏭</button>
+      <button class="icon-btn" id="refresh-btn" title="Refresh from Airtable">↻</button>
+      <button class="icon-btn" id="settings-btn" title="Settings">⚙</button>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="pane pane-left">
+      <div class="now-playing" id="now-playing">
+        <div class="np-empty">Pick a track from the queue to start playing</div>
+      </div>
+      <div class="sc-wrap" id="sc-wrap" style="display: none;">
+        <iframe id="sc-player" width="100%" height="120" scrolling="no" frameborder="no" allow="autoplay"></iframe>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-tab="queue">Queue <span class="tab-count" id="tab-count-queue">0</span></button>
+        <button class="tab" data-tab="filters">Filters</button>
+        <button class="tab" data-tab="similar">Similar</button>
+        <button class="tab" data-tab="wheel">Wheel</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="queue">
+        <div id="queue-content">
+          <div class="loading"><div class="spinner"></div> Waiting for Airtable credentials…</div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="filters">
+        <div class="tab-panel-inner">
+          <div class="filter-section">
+            <div class="filter-label">Search</div>
+            <input class="input" id="f-search" placeholder="Title contains…" />
+          </div>
+
+          <div class="filter-section">
+            <div class="filter-label">
+              BPM
+              <span class="filter-value" id="f-bpm-display">60 – 200</span>
+            </div>
+            <div class="range-dual" id="f-bpm">
+              <div class="range-track-bg"></div>
+              <div class="range-track-fill" id="f-bpm-fill"></div>
+              <input type="range" min="60" max="200" value="60" id="f-bpm-min">
+              <input type="range" min="60" max="200" value="200" id="f-bpm-max">
+            </div>
+          </div>
+
+          <div class="filter-section">
+            <div class="filter-label">
+              Energy
+              <span class="filter-value" id="f-energy-display">0.00 – 1.00</span>
+            </div>
+            <div class="range-dual" id="f-energy">
+              <div class="range-track-bg"></div>
+              <div class="range-track-fill" id="f-energy-fill"></div>
+              <input type="range" min="0" max="100" value="0" id="f-energy-min">
+              <input type="range" min="0" max="100" value="100" id="f-energy-max">
+            </div>
+          </div>
+
+          <div class="filter-section">
+            <div class="filter-label">
+              Danceability
+              <span class="filter-value" id="f-dance-display">0.00 – 2.50</span>
+            </div>
+            <div class="range-dual" id="f-dance">
+              <div class="range-track-bg"></div>
+              <div class="range-track-fill" id="f-dance-fill"></div>
+              <input type="range" min="0" max="250" value="0" id="f-dance-min">
+              <input type="range" min="0" max="250" value="250" id="f-dance-max">
+            </div>
+          </div>
+
+          <div class="filter-section">
+            <div class="filter-label">
+              Key / Scale
+              <span class="filter-value" id="f-key-display">all</span>
+            </div>
+            <div class="chip-grid" id="f-key-chips"></div>
+          </div>
+
+          <div class="filter-section">
+            <div class="filter-label">
+              Tags
+              <span class="filter-value" id="f-tag-display">all</span>
+            </div>
+            <div id="f-tag-chips"></div>
+          </div>
+
+          <div class="filter-section">
+            <div class="filter-label">
+              Sessions
+              <span class="filter-value" id="f-session-display">all</span>
+            </div>
+            <input class="input" id="f-session-search" placeholder="Search sessions…" style="margin-bottom: 8px;" />
+            <div class="chip-grid chip-scroll" id="f-session-chips"></div>
+          </div>
+
+          <button class="filter-reset" id="filter-reset">Reset all filters</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="similar">
+        <div id="similar-content">
+          <div class="similar-empty">Play a track to surface similar tracks ranked by Camelot proximity, BPM, and timbre.</div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="wheel">
+        <div class="wheel-wrap">
+          <svg class="wheel-svg" id="wheel-svg" viewBox="-200 -200 400 400"></svg>
+          <div class="wheel-legend">
+            <div class="wheel-legend-item">
+              <div class="wheel-legend-swatch" style="background: var(--accent)"></div>
+              Current
+            </div>
+            <div class="wheel-legend-item">
+              <div class="wheel-legend-swatch" style="background: rgba(0, 212, 255, 0.45)"></div>
+              Harmonic mix
+            </div>
+            <div class="wheel-legend-item">
+              <div class="wheel-legend-swatch" style="background: #1c2530"></div>
+              B (major)
+            </div>
+            <div class="wheel-legend-item">
+              <div class="wheel-legend-swatch" style="background: #251c25"></div>
+              A (minor)
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane pane-right" id="pane-right">
+      <div class="airtable-placeholder" id="airtable-placeholder">
+        <div>
+          <p>Paste your Airtable embed URL in Settings to dock the relational database here.</p>
+          <button class="btn btn-primary" id="placeholder-settings-btn">Open settings</button>
+        </div>
+      </div>
+      <iframe class="airtable-frame" id="airtable-frame" style="display:none;"></iframe>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <div id="status-left">Idle</div>
+    <div id="status-right" class="mono">phyzk crate · v0.1</div>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div class="modal-backdrop hidden" id="settings-modal">
+  <div class="modal">
+    <h2>Settings</h2>
+    <p>
+      Credentials are stored locally in your browser (<code>localStorage</code>) and never transmitted anywhere except Airtable.
+      Create a personal access token at
+      <a href="https://airtable.com/create/tokens" target="_blank">airtable.com/create/tokens</a>
+      with scopes <code>data.records:read</code> and <code>schema.bases:read</code> for base
+      <code>app6VzFBK4YEvHJ3H</code>.
+    </p>
+    <div class="form-row">
+      <label>Airtable Personal Access Token</label>
+      <input class="input" type="password" id="cfg-pat" placeholder="pat..." autocomplete="off" />
+    </div>
+    <div class="form-row">
+      <label>Airtable Embed URL (optional)</label>
+      <input class="input" type="url" id="cfg-iframe" placeholder="https://airtable.com/embed/..." />
+      <div class="hint">Interface → Share → Embed this view → copy URL. Leave empty to hide the right pane.</div>
+    </div>
+    <div class="form-row">
+      <label>Base ID · Table ID</label>
+      <input class="input" type="text" id="cfg-base" value="app6VzFBK4YEvHJ3H/tblX6RH8URgzxs3ty" />
+    </div>
+    <div class="form-actions">
+      <button class="btn" id="settings-cancel">Cancel</button>
+      <button class="btn btn-primary" id="settings-save">Save & load</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://w.soundcloud.com/player/api.js"></script>
+<script>
+'use strict';
+
+// ===========================================================================
+//  Camelot wheel
+// ===========================================================================
+// Maps musical key + scale → Camelot code (e.g. "A minor" → "8A").
+// Convention: A = minor (inner), B = major (outer). Numbers go up by fifths.
+const CAMELOT = {
+  'A minor':'8A','Bb minor':'3A','A# minor':'3A','B minor':'10A','C minor':'5A',
+  'C# minor':'12A','Db minor':'12A','D minor':'7A','D# minor':'2A','Eb minor':'2A',
+  'E minor':'9A','F minor':'4A','F# minor':'11A','Gb minor':'11A','G minor':'6A',
+  'G# minor':'1A','Ab minor':'1A',
+  'A major':'11B','Bb major':'6B','A# major':'6B','B major':'1B','C major':'8B',
+  'C# major':'3B','Db major':'3B','D major':'10B','D# major':'5B','Eb major':'5B',
+  'E major':'12B','F major':'7B','F# major':'2B','Gb major':'2B','G major':'9B',
+  'G# major':'4B','Ab major':'4B',
+};
+function camelotOf(key, scale) {
+  if (!key || !scale) return null;
+  return CAMELOT[`${key} ${scale}`] || null;
+}
+function camelotCompatible(c) {
+  if (!c) return new Set();
+  const n = parseInt(c, 10);
+  const m = c.slice(-1);
+  const wrap = x => ((x - 1 + 12) % 12) + 1;
+  return new Set([c, `${wrap(n - 1)}${m}`, `${wrap(n + 1)}${m}`,
+                  `${n}${m === 'A' ? 'B' : 'A'}`]);
+}
+
+// ===========================================================================
+//  State
+// ===========================================================================
+const STATE = {
+  cfg: loadCfg(),
+  tracks: [],
+  tagsById: null,        // Map<recId, {name, type}>
+  sessionsById: null,    // Map<recId, {name, date}>
+  mfccById: null,        // optional, from ../tracks.json
+  filtered: [],
+  current: null,
+  widget: null,
+  isPlaying: false,
+  filters: {
+    search: '',
+    bpmMin: 60, bpmMax: 200,
+    energyMin: 0, energyMax: 1,
+    danceMin: 0, danceMax: 2.5,
+    keys: new Set(),     // selected "Key Scale" strings
+    tags: new Set(),     // selected tag record IDs
+    sessions: new Set(), // selected session record IDs
+  },
+  sort: { field: 'bpm', dir: 'asc' },
+};
+
+function loadCfg() {
+  try {
+    return JSON.parse(localStorage.getItem('phyzk-crate-cfg') || '{}');
+  } catch { return {}; }
+}
+function saveCfg(cfg) {
+  localStorage.setItem('phyzk-crate-cfg', JSON.stringify(cfg));
+  STATE.cfg = cfg;
+}
+
+// ===========================================================================
+//  Settings modal
+// ===========================================================================
+const modal = document.getElementById('settings-modal');
+function openSettings() {
+  document.getElementById('cfg-pat').value = STATE.cfg.pat || '';
+  document.getElementById('cfg-iframe').value = STATE.cfg.iframeUrl || '';
+  document.getElementById('cfg-base').value =
+    `${STATE.cfg.baseId || 'app6VzFBK4YEvHJ3H'}/${STATE.cfg.tableId || 'tblX6RH8URgzxs3ty'}`;
+  modal.classList.remove('hidden');
+}
+function closeSettings() { modal.classList.add('hidden'); }
+document.getElementById('settings-btn').onclick = openSettings;
+document.getElementById('placeholder-settings-btn').onclick = openSettings;
+document.getElementById('settings-cancel').onclick = closeSettings;
+document.getElementById('settings-save').onclick = () => {
+  const pat = document.getElementById('cfg-pat').value.trim();
+  const iframeUrl = document.getElementById('cfg-iframe').value.trim();
+  const baseInput = document.getElementById('cfg-base').value.trim().split('/');
+  const baseId = baseInput[0] || 'app6VzFBK4YEvHJ3H';
+  const tableId = baseInput[1] || 'tblX6RH8URgzxs3ty';
+  saveCfg({ pat, iframeUrl, baseId, tableId });
+  closeSettings();
+  applyIframe();
+  if (pat) loadAll();
+};
+
+function applyIframe() {
+  const frame = document.getElementById('airtable-frame');
+  const placeholder = document.getElementById('airtable-placeholder');
+  if (STATE.cfg.iframeUrl) {
+    frame.src = STATE.cfg.iframeUrl;
+    frame.style.display = '';
+    placeholder.style.display = 'none';
+  } else {
+    frame.style.display = 'none';
+    placeholder.style.display = '';
+  }
+}
+
+// ===========================================================================
+//  Airtable fetch
+// ===========================================================================
+async function fetchTable(baseId, tableId, pat) {
+  const out = [];
+  let offset = null;
+  while (true) {
+    const params = new URLSearchParams({ pageSize: '100' });
+    if (offset) params.set('offset', offset);
+    const r = await fetch(
+      `https://api.airtable.com/v0/${baseId}/${tableId}?${params}`,
+      { headers: { Authorization: `Bearer ${pat}` } }
+    );
+    if (!r.ok) throw new Error(`Airtable ${r.status}: ${await r.text()}`);
+    const json = await r.json();
+    out.push(...json.records);
+    offset = json.offset;
+    if (!offset) break;
+  }
+  return out;
+}
+
+function normalizeTrack(r) {
+  const f = r.fields || {};
+  const key = f['Key'];
+  const scale = f['Scale'];
+  return {
+    id: r.id,
+    title: f['Title'] || '(untitled)',
+    artists: f['Artists'] || [],
+    url: f['SoundCloud URL'] || '',
+    uploadDate: f['Upload Date'] || '',
+    duration: f['Duration (s)'] || 0,
+    bpm: f['BPM'] || 0,
+    key, scale,
+    camelot: camelotOf(key, scale),
+    energy: f['Energy'] || 0,
+    danceability: f['Danceability'] || 0,
+    loudness: f['Loudness (LUFS)'] || 0,
+    spectralCentroid: f['Spectral Centroid'] || 0,
+    tags: f['Tags'] || [],
+    session: f['Session'] || [],
+  };
+}
+
+async function loadAll() {
+  if (!STATE.cfg.pat) { openSettings(); return; }
+  setStatus('Loading from Airtable…');
+  document.getElementById('queue-content').innerHTML =
+    '<div class="loading"><div class="spinner"></div> Loading from Airtable…</div>';
+  try {
+    // Tracks is mandatory; Tags + Sessions are optional (best-effort, don't fail loadAll if missing).
+    const tracksP = fetchTable(STATE.cfg.baseId, STATE.cfg.tableId, STATE.cfg.pat);
+    const tagsP = fetchTable(STATE.cfg.baseId, 'Tags', STATE.cfg.pat).catch(() => null);
+    const sessP = fetchTable(STATE.cfg.baseId, 'Sessions', STATE.cfg.pat).catch(() => null);
+    const [recs, tagRecs, sessRecs] = await Promise.all([tracksP, tagsP, sessP]);
+
+    STATE.tracks = recs.map(normalizeTrack);
+    if (tagRecs) {
+      STATE.tagsById = new Map(tagRecs.map(r => [r.id, {
+        name: r.fields.Tag || '(unnamed)',
+        type: r.fields.Type?.name || 'other',
+      }]));
+    }
+    if (sessRecs) {
+      STATE.sessionsById = new Map(sessRecs.map(r => [r.id, {
+        name: r.fields['Session Name'] || '(unnamed)',
+        date: r.fields.Date || '',
+      }]));
+    }
+
+    document.getElementById('track-count').textContent = `${STATE.tracks.length} tracks`;
+    const extras = [];
+    if (STATE.tagsById) extras.push(`${STATE.tagsById.size} tags`);
+    if (STATE.sessionsById) extras.push(`${STATE.sessionsById.size} sessions`);
+    setStatus(`Loaded ${STATE.tracks.length} tracks` + (extras.length ? ` · ${extras.join(' · ')}` : ''));
+    // Try to load MFCC sidecar (optional)
+    loadMfccSidecar();
+    rebuildFilters();
+    applyFilters();
+    drawWheel();
+  } catch (e) {
+    console.error(e);
+    setStatus(`Error: ${e.message}`, true);
+    document.getElementById('queue-content').innerHTML =
+      `<div class="loading">Could not load tracks. Check your PAT in Settings.<br><small>${e.message}</small></div>`;
+  }
+}
+
+async function loadMfccSidecar() {
+  try {
+    // Works both deployed at site root (tracks.json next to index.html)
+    // and locally where the player lives in player/ next to ../tracks.json.
+    let r = await fetch('tracks.json');
+    if (!r.ok) r = await fetch('../tracks.json');
+    if (!r.ok) return;
+    const data = await r.json();
+    const map = new Map();
+    for (const t of data) {
+      if (!t.url) continue;
+      map.set(t.url, t.mfcc_mean || null);
+    }
+    // Index Airtable tracks by URL → MFCC
+    STATE.mfccById = new Map();
+    for (const tr of STATE.tracks) {
+      const mfcc = map.get(tr.url);
+      if (mfcc) STATE.mfccById.set(tr.id, mfcc);
+    }
+    console.log(`MFCC loaded for ${STATE.mfccById.size}/${STATE.tracks.length} tracks`);
+  } catch (e) {
+    console.log('No MFCC sidecar available:', e.message);
+  }
+}
+
+// ===========================================================================
+//  Filter UI
+// ===========================================================================
+function rebuildFilters() {
+  // Key chips: build set of "Key scale" strings actually present in data
+  const keyCounts = new Map();
+  for (const t of STATE.tracks) {
+    if (t.key && t.scale) {
+      const k = `${t.key} ${t.scale}`;
+      keyCounts.set(k, (keyCounts.get(k) || 0) + 1);
+    }
+  }
+  // Sort by Camelot number for nicer layout
+  const keys = Array.from(keyCounts.keys()).sort((a, b) => {
+    const ca = camelotOf(...a.split(' '));
+    const cb = camelotOf(...b.split(' '));
+    if (!ca && !cb) return a.localeCompare(b);
+    if (!ca) return 1;
+    if (!cb) return -1;
+    const na = parseInt(ca), nb = parseInt(cb);
+    if (na !== nb) return na - nb;
+    return ca.localeCompare(cb);
+  });
+  const keyChipsEl = document.getElementById('f-key-chips');
+  keyChipsEl.innerHTML = '';
+  for (const k of keys) {
+    const ca = camelotOf(...k.split(' '));
+    const chip = document.createElement('button');
+    chip.className = 'chip';
+    chip.textContent = `${ca || '?'} · ${k}`;
+    chip.dataset.key = k;
+    chip.onclick = () => {
+      if (STATE.filters.keys.has(k)) STATE.filters.keys.delete(k);
+      else STATE.filters.keys.add(k);
+      chip.classList.toggle('active');
+      updateKeyDisplay();
+      applyFilters();
+    };
+    keyChipsEl.appendChild(chip);
+  }
+  updateKeyDisplay();
+  renderTagChips();
+  renderSessionChips('');
+}
+
+function updateKeyDisplay() {
+  const n = STATE.filters.keys.size;
+  document.getElementById('f-key-display').textContent =
+    n === 0 ? 'all' : `${n} selected`;
+}
+function updateTagDisplay() {
+  const n = STATE.filters.tags.size;
+  document.getElementById('f-tag-display').textContent =
+    n === 0 ? 'all' : `${n} selected`;
+}
+function updateSessionDisplay() {
+  const n = STATE.filters.sessions.size;
+  document.getElementById('f-session-display').textContent =
+    n === 0 ? 'all' : `${n} selected`;
+}
+
+function renderTagChips() {
+  const el = document.getElementById('f-tag-chips');
+  if (!STATE.tagsById || STATE.tagsById.size === 0) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-faint);padding:6px 0">No tags loaded.</div>';
+    return;
+  }
+  // Restrict to tags actually attached to at least one track
+  const usedTagIds = new Set();
+  for (const t of STATE.tracks) for (const id of t.tags) usedTagIds.add(id);
+
+  // Group by Type
+  const grouped = new Map();
+  for (const [id, info] of STATE.tagsById) {
+    if (!usedTagIds.has(id)) continue;
+    const list = grouped.get(info.type) || [];
+    list.push({ id, name: info.name });
+    grouped.set(info.type, list);
+  }
+  // Preferred type order, then anything else alphabetically
+  const order = ['key', 'tempo', 'mood', 'genre', 'instrument', 'other'];
+  const types = Array.from(grouped.keys()).sort((a, b) => {
+    const ia = order.indexOf(a); const ib = order.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+
+  let html = '';
+  for (const type of types) {
+    const items = grouped.get(type);
+    items.sort((a, b) => a.name.localeCompare(b.name));
+    html += `<div class="filter-subgroup-label">${escapeHtml(type)}</div><div class="chip-grid" style="margin-bottom:8px">`;
+    for (const item of items) {
+      const active = STATE.filters.tags.has(item.id) ? ' active' : '';
+      html += `<button class="chip${active}" data-tag-id="${item.id}">${escapeHtml(item.name)}</button>`;
+    }
+    html += '</div>';
+  }
+  el.innerHTML = html;
+  el.querySelectorAll('[data-tag-id]').forEach(c => {
+    c.onclick = () => {
+      const id = c.dataset.tagId;
+      if (STATE.filters.tags.has(id)) STATE.filters.tags.delete(id);
+      else STATE.filters.tags.add(id);
+      c.classList.toggle('active');
+      updateTagDisplay();
+      applyFilters();
+    };
+  });
+  updateTagDisplay();
+}
+
+function renderSessionChips(query) {
+  const el = document.getElementById('f-session-chips');
+  if (!STATE.sessionsById || STATE.sessionsById.size === 0) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-faint);padding:6px">No sessions loaded.</div>';
+    return;
+  }
+  // Restrict to sessions actually attached to at least one track
+  const usedSessIds = new Set();
+  for (const t of STATE.tracks) for (const id of t.session) usedSessIds.add(id);
+
+  let items = Array.from(STATE.sessionsById.entries())
+    .filter(([id]) => usedSessIds.has(id))
+    .map(([id, info]) => ({ id, name: info.name, date: info.date }));
+
+  const q = (query || '').trim().toLowerCase();
+  if (q) {
+    items = items.filter(s =>
+      (s.name || '').toLowerCase().includes(q) ||
+      (s.date || '').includes(q)
+    );
+  }
+  // Recent first, then alpha
+  items.sort((a, b) => (b.date || '').localeCompare(a.date || '') || a.name.localeCompare(b.name));
+
+  el.innerHTML = items.map(s => {
+    const active = STATE.filters.sessions.has(s.id) ? ' active' : '';
+    return `<button class="chip${active}" data-session-id="${s.id}" title="${escapeHtml(s.date || '')}">${escapeHtml(s.name)}</button>`;
+  }).join('') || '<div style="font-size:11px;color:var(--text-faint);padding:6px">No sessions match.</div>';
+  el.querySelectorAll('[data-session-id]').forEach(c => {
+    c.onclick = () => {
+      const id = c.dataset.sessionId;
+      if (STATE.filters.sessions.has(id)) STATE.filters.sessions.delete(id);
+      else STATE.filters.sessions.add(id);
+      c.classList.toggle('active');
+      updateSessionDisplay();
+      applyFilters();
+    };
+  });
+  updateSessionDisplay();
+}
+
+// Dual range slider wiring
+function wireDualRange(prefix, scale, displayFmt) {
+  const min = document.getElementById(`f-${prefix}-min`);
+  const max = document.getElementById(`f-${prefix}-max`);
+  const fill = document.getElementById(`f-${prefix}-fill`);
+  const display = document.getElementById(`f-${prefix}-display`);
+  const update = () => {
+    let lo = +min.value, hi = +max.value;
+    if (lo > hi) {
+      // Move whichever was last touched
+      if (min === document.activeElement) hi = lo;
+      else lo = hi;
+      min.value = lo; max.value = hi;
+    }
+    const total = +min.max - +min.min;
+    const lpct = ((lo - +min.min) / total) * 100;
+    const hpct = ((hi - +min.min) / total) * 100;
+    fill.style.left = lpct + '%';
+    fill.style.width = (hpct - lpct) + '%';
+    const loVal = lo / scale, hiVal = hi / scale;
+    display.textContent = `${displayFmt(loVal)} – ${displayFmt(hiVal)}`;
+    return [loVal, hiVal];
+  };
+  const apply = () => {
+    const [lo, hi] = update();
+    STATE.filters[`${prefix}Min`] = lo;
+    STATE.filters[`${prefix}Max`] = hi;
+    applyFilters();
+  };
+  min.addEventListener('input', update);
+  max.addEventListener('input', update);
+  min.addEventListener('change', apply);
+  max.addEventListener('change', apply);
+  update();
+}
+wireDualRange('bpm', 1, v => v.toFixed(0));
+wireDualRange('energy', 100, v => v.toFixed(2));
+wireDualRange('dance', 100, v => v.toFixed(2));
+
+document.getElementById('f-search').addEventListener('input', e => {
+  STATE.filters.search = e.target.value.trim().toLowerCase();
+  applyFilters();
+});
+document.getElementById('f-session-search').addEventListener('input', e => {
+  renderSessionChips(e.target.value);
+});
+
+document.getElementById('filter-reset').onclick = () => {
+  STATE.filters = {
+    search: '',
+    bpmMin: 60, bpmMax: 200,
+    energyMin: 0, energyMax: 1,
+    danceMin: 0, danceMax: 2.5,
+    keys: new Set(),
+    tags: new Set(),
+    sessions: new Set(),
+  };
+  document.getElementById('f-search').value = '';
+  document.getElementById('f-session-search').value = '';
+  document.getElementById('f-bpm-min').value = 60;
+  document.getElementById('f-bpm-max').value = 200;
+  document.getElementById('f-energy-min').value = 0;
+  document.getElementById('f-energy-max').value = 100;
+  document.getElementById('f-dance-min').value = 0;
+  document.getElementById('f-dance-max').value = 250;
+  ['bpm', 'energy', 'dance'].forEach(p => {
+    document.getElementById(`f-${p}-min`).dispatchEvent(new Event('input'));
+  });
+  document.querySelectorAll('#f-key-chips .chip.active, #f-tag-chips .chip.active, #f-session-chips .chip.active')
+    .forEach(c => c.classList.remove('active'));
+  updateKeyDisplay();
+  updateTagDisplay();
+  updateSessionDisplay();
+  renderSessionChips('');
+  applyFilters();
+};
+
+// ===========================================================================
+//  Filtering + sort
+// ===========================================================================
+function applyFilters() {
+  const F = STATE.filters;
+  STATE.filtered = STATE.tracks.filter(t => {
+    if (F.search && !t.title.toLowerCase().includes(F.search)) return false;
+    if (t.bpm < F.bpmMin || t.bpm > F.bpmMax) return false;
+    if (t.energy < F.energyMin || t.energy > F.energyMax) return false;
+    if (t.danceability < F.danceMin || t.danceability > F.danceMax) return false;
+    if (F.keys.size > 0) {
+      const k = `${t.key} ${t.scale}`;
+      if (!F.keys.has(k)) return false;
+    }
+    if (F.tags.size > 0 && !t.tags.some(id => F.tags.has(id))) return false;
+    if (F.sessions.size > 0 && !t.session.some(id => F.sessions.has(id))) return false;
+    return true;
+  });
+  sortFiltered();
+  renderQueue();
+}
+
+function sortFiltered() {
+  const { field, dir } = STATE.sort;
+  const m = dir === 'asc' ? 1 : -1;
+  STATE.filtered.sort((a, b) => {
+    let av, bv;
+    switch (field) {
+      case 'title': av = a.title.toLowerCase(); bv = b.title.toLowerCase(); break;
+      case 'bpm': av = a.bpm; bv = b.bpm; break;
+      case 'energy': av = a.energy; bv = b.energy; break;
+      case 'camelot': av = a.camelot || 'zz'; bv = b.camelot || 'zz'; break;
+      case 'date': av = a.uploadDate; bv = b.uploadDate; break;
+      default: av = 0; bv = 0;
+    }
+    if (av < bv) return -m;
+    if (av > bv) return m;
+    return 0;
+  });
+}
+
+// ===========================================================================
+//  Render: queue / track list
+// ===========================================================================
+function renderQueue() {
+  document.getElementById('tab-count-queue').textContent = STATE.filtered.length;
+  const container = document.getElementById('queue-content');
+  const cur = STATE.current?.id;
+  const SORT_FIELDS = [
+    ['', ''], ['title', 'Title'], ['bpm', 'BPM'], ['energy', 'Energy'], ['camelot', 'Key']
+  ];
+  const headerHtml = `
+    <div class="track-list-header">
+      <div></div>
+      <div data-sort="title" class="${STATE.sort.field === 'title' ? 'sorted' : ''}">
+        Title ${STATE.sort.field === 'title' ? (STATE.sort.dir === 'asc' ? '↑' : '↓') : ''}
+      </div>
+      <div data-sort="camelot" style="text-align:center" class="${STATE.sort.field === 'camelot' ? 'sorted' : ''}">
+        Key ${STATE.sort.field === 'camelot' ? (STATE.sort.dir === 'asc' ? '↑' : '↓') : ''}
+      </div>
+      <div data-sort="bpm" style="text-align:right" class="${STATE.sort.field === 'bpm' ? 'sorted' : ''}">
+        BPM ${STATE.sort.field === 'bpm' ? (STATE.sort.dir === 'asc' ? '↑' : '↓') : ''}
+      </div>
+      <div data-sort="energy" style="text-align:right" class="${STATE.sort.field === 'energy' ? 'sorted' : ''}">
+        E ${STATE.sort.field === 'energy' ? (STATE.sort.dir === 'asc' ? '↑' : '↓') : ''}
+      </div>
+    </div>`;
+
+  if (!STATE.filtered.length) {
+    container.innerHTML = headerHtml + '<div class="loading">No tracks match these filters.</div>';
+    wireSortHandlers();
+    return;
+  }
+
+  const rows = STATE.filtered.map(t => `
+    <div class="track-row ${t.id === cur ? 'playing' : ''}" data-id="${t.id}">
+      <button class="track-play-btn">▶</button>
+      <div class="track-meta-col">
+        <div class="track-title">${escapeHtml(t.title)}</div>
+        <div class="track-sub">${formatSub(t)}</div>
+      </div>
+      <div class="track-camelot">${t.camelot || '—'}</div>
+      <div class="track-bpm">${t.bpm ? t.bpm.toFixed(0) : '—'}</div>
+      <div class="track-energy-cell">
+        <span class="energy-dot" style="color:${energyColor(t.energy)};opacity:${0.3 + 0.7 * t.energy}"></span>${(t.energy || 0).toFixed(2)}
+      </div>
+    </div>
+  `).join('');
+
+  container.innerHTML = headerHtml + '<div class="track-list">' + rows + '</div>';
+
+  container.querySelectorAll('.track-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const t = STATE.filtered.find(x => x.id === row.dataset.id);
+      if (t) play(t);
+    });
+  });
+  wireSortHandlers();
+}
+
+function wireSortHandlers() {
+  document.querySelectorAll('.track-list-header [data-sort]').forEach(el => {
+    el.onclick = () => {
+      const f = el.dataset.sort;
+      if (STATE.sort.field === f) {
+        STATE.sort.dir = STATE.sort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        STATE.sort.field = f;
+        STATE.sort.dir = (f === 'title' || f === 'camelot') ? 'asc' : 'desc';
+      }
+      sortFiltered();
+      renderQueue();
+    };
+  });
+}
+
+function formatSub(t) {
+  const parts = [];
+  if (t.artists?.length) {
+    parts.push(t.artists.map(a => typeof a === 'string' ? a : a.name).join(' · '));
+  }
+  if (t.duration) parts.push(formatDuration(t.duration));
+  if (t.uploadDate) parts.push(t.uploadDate);
+  return parts.join(' • ');
+}
+
+function formatDuration(s) {
+  const m = Math.floor(s / 60), sec = Math.round(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+
+function energyColor(e) {
+  if (e > 0.7) return 'var(--red)';
+  if (e > 0.4) return 'var(--orange)';
+  return 'var(--green)';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'
+  }[c]));
+}
+
+// ===========================================================================
+//  Render: Now Playing
+// ===========================================================================
+function renderNowPlaying(t) {
+  const el = document.getElementById('now-playing');
+  if (!t) {
+    el.innerHTML = '<div class="np-empty">Pick a track from the queue to start playing</div>';
+    return;
+  }
+  const energyPct = Math.round((t.energy || 0) * 100);
+  const dancePct = Math.round(((t.danceability || 0) / 2.5) * 100);
+  el.innerHTML = `
+    <div class="np-title">${escapeHtml(t.title)}</div>
+    <div class="np-meta">
+      ${t.artists?.length ? escapeHtml(t.artists.map(a => typeof a === 'string' ? a : a.name).join(' · ')) : 'unknown artist'}
+      ${t.uploadDate ? ' • ' + t.uploadDate : ''}
+      ${t.duration ? ' • ' + formatDuration(t.duration) : ''}
+    </div>
+    <div class="np-stats">
+      <div class="stat"><span class="stat-label">key</span> <span class="stat-key">${t.key || '?'} ${t.scale || ''}</span></div>
+      <div class="stat"><span class="stat-label">camelot</span> <span class="stat-camelot">${t.camelot || '—'}</span></div>
+      <div class="stat"><span class="stat-label">bpm</span> <span class="stat-bpm">${t.bpm ? t.bpm.toFixed(1) : '—'}</span></div>
+      <div class="stat"><span class="stat-label">lufs</span> ${t.loudness ? t.loudness.toFixed(1) : '—'}</div>
+    </div>
+    <div class="stat-bars">
+      <div class="bar-row">
+        <div class="bar-label"><span>Energy</span><span class="bar-value">${(t.energy || 0).toFixed(3)}</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${energyPct}%"></div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label"><span>Dance</span><span class="bar-value">${(t.danceability || 0).toFixed(3)}</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${dancePct}%"></div></div>
+      </div>
+    </div>`;
+}
+
+// ===========================================================================
+//  Similarity
+// ===========================================================================
+function cosine(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9);
+}
+
+function featureVec(t) {
+  return [
+    (t.bpm || 100) / 200,
+    t.energy || 0,
+    (t.danceability || 0) / 2.5,
+    (t.spectralCentroid || 0) / 5000,
+  ];
+}
+function featureDist(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += (a[i] - b[i]) ** 2;
+  return Math.sqrt(s);
+}
+
+function findSimilar(t, k = 12) {
+  const compat = camelotCompatible(t.camelot);
+  const targetVec = featureVec(t);
+  const targetMfcc = STATE.mfccById?.get(t.id);
+
+  const scored = [];
+  for (const other of STATE.tracks) {
+    if (other.id === t.id) continue;
+    // Feature distance (smaller is better, normalize to 0-1)
+    const fd = featureDist(targetVec, featureVec(other));
+    const featureScore = Math.max(0, 1 - fd / 1.5);
+    // MFCC cosine (-1..1, push to 0..1)
+    let mfccScore = 0;
+    if (targetMfcc) {
+      const om = STATE.mfccById.get(other.id);
+      if (om) mfccScore = (cosine(targetMfcc, om) + 1) / 2;
+    }
+    // Camelot compatibility bonus
+    const camelotBonus = compat.has(other.camelot) ? 0.2 : 0;
+    // BPM proximity bonus (within 6 BPM is +0.15)
+    const bpmDiff = Math.abs((other.bpm || 0) - (t.bpm || 0));
+    const bpmBonus = bpmDiff < 6 ? 0.15 : bpmDiff < 12 ? 0.07 : 0;
+
+    const score = targetMfcc
+      ? (0.5 * mfccScore + 0.3 * featureScore + camelotBonus + bpmBonus)
+      : (0.7 * featureScore + camelotBonus + bpmBonus);
+
+    scored.push({ track: other, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, k);
+}
+
+function renderSimilar() {
+  const el = document.getElementById('similar-content');
+  if (!STATE.current) {
+    el.innerHTML = '<div class="similar-empty">Play a track to surface similar tracks ranked by Camelot proximity, BPM, and timbre.</div>';
+    return;
+  }
+  const ranked = findSimilar(STATE.current);
+  const headerHtml = `
+    <div class="track-list-header">
+      <div></div>
+      <div>Title</div>
+      <div style="text-align:center">Key</div>
+      <div style="text-align:right">BPM</div>
+      <div style="text-align:right">Match</div>
+    </div>`;
+  const rows = ranked.map(({ track, score }) => `
+    <div class="similar-row" data-id="${track.id}">
+      <button class="track-play-btn">▶</button>
+      <div class="track-meta-col">
+        <div class="track-title">${escapeHtml(track.title)}</div>
+        <div class="track-sub">${formatSub(track)}</div>
+      </div>
+      <div class="track-camelot">${track.camelot || '—'}</div>
+      <div class="track-bpm">${track.bpm ? track.bpm.toFixed(0) : '—'}</div>
+      <div class="similar-pct">${Math.round(score * 100)}%</div>
+    </div>
+  `).join('');
+  el.innerHTML = headerHtml + rows;
+  el.querySelectorAll('.similar-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const t = STATE.tracks.find(x => x.id === row.dataset.id);
+      if (t) play(t);
+    });
+  });
+}
+
+// ===========================================================================
+//  Camelot wheel SVG
+// ===========================================================================
+function drawWheel() {
+  const svg = document.getElementById('wheel-svg');
+  const compat = camelotCompatible(STATE.current?.camelot);
+  const cur = STATE.current?.camelot;
+  const counts = new Map();
+  for (const t of STATE.tracks) {
+    if (!t.camelot) continue;
+    counts.set(t.camelot, (counts.get(t.camelot) || 0) + 1);
+  }
+  const R_OUT = 180, R_MID = 120, R_IN = 60;
+  const N = 12;
+  const step = (2 * Math.PI) / N;
+  // Camelot 12 is at top; numbers increase clockwise
+  const angleFor = i => -Math.PI / 2 + (i - 1) * step;
+
+  let html = '';
+  for (let i = 1; i <= N; i++) {
+    const a0 = angleFor(i) - step / 2;
+    const a1 = angleFor(i) + step / 2;
+    // Outer ring = B (major)
+    html += slice(a0, a1, R_MID, R_OUT, `${i}B`, 'outer', compat, cur, counts);
+    // Inner ring = A (minor)
+    html += slice(a0, a1, R_IN, R_MID, `${i}A`, 'inner', compat, cur, counts);
+  }
+  // Center
+  html += `<circle class="wheel-center" cx="0" cy="0" r="${R_IN}"/>`;
+  if (cur) {
+    html += `<text class="wheel-center-text" x="0" y="-8">Current</text>`;
+    html += `<text class="wheel-center-text" x="0" y="6" style="font-size:18px;fill:var(--accent);font-weight:700">${cur}</text>`;
+  } else {
+    html += `<text class="wheel-center-text" x="0" y="0">Pick a track</text>`;
+  }
+  svg.innerHTML = html;
+
+  svg.querySelectorAll('.wheel-slice').forEach(el => {
+    el.addEventListener('click', () => {
+      const code = el.dataset.code;
+      // Toggle all keys that map to this Camelot code
+      const keys = Object.entries(CAMELOT)
+        .filter(([_, v]) => v === code).map(([k]) => k);
+      const allActive = keys.every(k => STATE.filters.keys.has(k));
+      for (const k of keys) {
+        if (allActive) STATE.filters.keys.delete(k);
+        else STATE.filters.keys.add(k);
+      }
+      document.querySelectorAll('#f-key-chips .chip').forEach(c => {
+        c.classList.toggle('active', STATE.filters.keys.has(c.dataset.key));
+      });
+      updateKeyDisplay();
+      applyFilters();
+      // Switch to queue tab
+      activateTab('queue');
+    });
+  });
+}
+
+function slice(a0, a1, rIn, rOut, code, kind, compat, current, counts) {
+  const x0o = Math.cos(a0) * rOut, y0o = Math.sin(a0) * rOut;
+  const x1o = Math.cos(a1) * rOut, y1o = Math.sin(a1) * rOut;
+  const x0i = Math.cos(a0) * rIn, y0i = Math.sin(a0) * rIn;
+  const x1i = Math.cos(a1) * rIn, y1i = Math.sin(a1) * rIn;
+  const path = [
+    `M ${x0o} ${y0o}`,
+    `A ${rOut} ${rOut} 0 0 1 ${x1o} ${y1o}`,
+    `L ${x1i} ${y1i}`,
+    `A ${rIn} ${rIn} 0 0 0 ${x0i} ${y0i}`,
+    'Z'
+  ].join(' ');
+  const labelR = (rIn + rOut) / 2;
+  const lx = Math.cos((a0 + a1) / 2) * labelR;
+  const ly = Math.sin((a0 + a1) / 2) * labelR;
+  const cls = ['wheel-slice', kind];
+  if (code === current) cls.push('current');
+  else if (compat.has(code)) cls.push('compatible');
+  const count = counts.get(code) || 0;
+  const countText = count > 0 ? `<text class="wheel-label dim" x="${lx}" y="${ly + 10}" style="font-size:8px">${count}</text>` : '';
+  return `
+    <path class="${cls.join(' ')}" d="${path}" data-code="${code}">
+      <title>${code} · ${count} tracks</title>
+    </path>
+    <text class="wheel-label" x="${lx}" y="${ly}">${code}</text>
+    ${countText}
+  `;
+}
+
+// ===========================================================================
+//  SoundCloud playback
+// ===========================================================================
+function play(t) {
+  STATE.current = t;
+  const wrap = document.getElementById('sc-wrap');
+  const iframe = document.getElementById('sc-player');
+  const params = new URLSearchParams({
+    url: t.url,
+    auto_play: 'true',
+    show_artwork: 'true',
+    show_user: 'false',
+    show_comments: 'false',
+    show_teaser: 'false',
+    visual: 'false',
+    hide_related: 'true',
+    color: '00d4ff',
+  });
+  iframe.src = `https://w.soundcloud.com/player/?${params}`;
+  wrap.style.display = '';
+
+  if (!STATE.widget) {
+    iframe.onload = () => {
+      STATE.widget = SC.Widget(iframe);
+      STATE.widget.bind(SC.Widget.Events.FINISH, playNext);
+      STATE.widget.bind(SC.Widget.Events.PLAY, () => {
+        setPlayingIcon(true);
+        setStatus(`Playing · ${STATE.current?.title || ''}`);
+      });
+      STATE.widget.bind(SC.Widget.Events.PAUSE, () => {
+        setPlayingIcon(false);
+        setStatus(`Paused · ${STATE.current?.title || ''}`);
+      });
+    };
+  } else {
+    setStatus(`Playing · ${t.title}`);
+  }
+
+  renderNowPlaying(t);
+  renderQueue();
+  renderSimilar();
+  drawWheel();
+}
+
+function playNext() { stepCurrent(1); }
+function playPrev() { stepCurrent(-1); }
+function stepCurrent(delta) {
+  if (!STATE.current || !STATE.filtered.length) return;
+  const idx = STATE.filtered.findIndex(t => t.id === STATE.current.id);
+  if (idx < 0) {
+    play(STATE.filtered[0]);
+    return;
+  }
+  const next = STATE.filtered[(idx + delta + STATE.filtered.length) % STATE.filtered.length];
+  play(next);
+}
+
+document.getElementById('next-btn').onclick = playNext;
+document.getElementById('prev-btn').onclick = playPrev;
+document.getElementById('refresh-btn').onclick = loadAll;
+
+const playPauseBtn = document.getElementById('playpause-btn');
+function setPlayingIcon(playing) {
+  STATE.isPlaying = playing;
+  playPauseBtn.textContent = playing ? '⏸' : '▶';
+  playPauseBtn.title = playing ? 'Pause (space)' : 'Play (space)';
+  playPauseBtn.classList.toggle('playing', playing);
+}
+playPauseBtn.onclick = () => {
+  if (!STATE.widget) {
+    // No track loaded yet — start with first in the filtered queue
+    if (STATE.filtered.length) play(STATE.filtered[0]);
+    return;
+  }
+  STATE.widget.toggle();
+};
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); playNext(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); playPrev(); }
+  else if (e.key === ' ') { e.preventDefault(); playPauseBtn.click(); }
+});
+
+// ===========================================================================
+//  Tabs
+// ===========================================================================
+function activateTab(name) {
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.dataset.tab === name);
+  });
+}
+document.querySelectorAll('.tab').forEach(t => {
+  t.onclick = () => activateTab(t.dataset.tab);
+});
+
+// ===========================================================================
+//  Toast / status
+// ===========================================================================
+let toastTimer = null;
+function setStatus(msg, isError = false) {
+  document.getElementById('status-left').textContent = msg;
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.toggle('error', isError);
+  toast.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('visible'), 1800);
+}
+
+// ===========================================================================
+//  Boot
+// ===========================================================================
+function boot() {
+  applyIframe();
+  drawWheel();
+  if (!STATE.cfg.pat) {
+    openSettings();
+  } else {
+    loadAll();
+  }
+}
+boot();
+</script>
+</body>
+</html>
