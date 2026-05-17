@@ -831,6 +831,7 @@ const STATE = {
   tracks: [],
   tagsById: null,        // Map<recId, {name, type}>
   sessionsById: null,    // Map<recId, {name, date}>
+  playlists: [],         // [{ name, url, type, track_count, tracks: [url] }] from playlists.json
   mfccById: null,        // optional, from ../tracks.json
   filtered: [],
   current: null,
@@ -846,6 +847,8 @@ const STATE = {
     sessions: new Set(), // selected session record IDs
     projects: new Set(), // selected project names (from Airtable Project field)
     year: null,          // selected upload year, e.g. "2024"
+    urls: null,          // Set<url> when a SoundCloud playlist is loaded as the queue
+    activePlaylistUrl: null, // playlist URL currently lit in the Playlists tab
   },
   sort: { field: 'bpm', dir: 'asc' },
 };
@@ -957,6 +960,21 @@ function formatJsonDate(s) {
   // tracks.json uses YYYYMMDD; Airtable uses YYYY-MM-DD
   if (/^\d{8}$/.test(s)) return `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
   return s;
+}
+
+async function loadPlaylistsCatalog() {
+  // Optional: scraped SoundCloud sets/albums in player/playlists.json
+  try {
+    let r = await fetch('playlists.json');
+    if (!r.ok) return;
+    const data = await r.json();
+    if (Array.isArray(data)) {
+      STATE.playlists = data;
+      console.log(`Loaded ${data.length} SoundCloud playlists`);
+    }
+  } catch (e) {
+    console.warn('playlists.json not loaded:', e);
+  }
 }
 
 async function loadStaticTracks() {
@@ -1275,6 +1293,8 @@ document.getElementById('filter-reset').onclick = () => {
     sessions: new Set(),
     projects: new Set(),
     year: null,
+    urls: null,
+    activePlaylistUrl: null,
   };
   document.getElementById('f-search').value = '';
   document.getElementById('f-session-search').value = '';
@@ -1315,6 +1335,7 @@ function applyFilters() {
     if (F.sessions.size > 0 && !t.session.some(id => F.sessions.has(id))) return false;
     if (F.projects.size > 0 && !(t.project || []).some(p => F.projects.has(p.name))) return false;
     if (F.year && !(t.uploadDate || '').startsWith(F.year)) return false;
+    if (F.urls && !F.urls.has(t.url)) return false;
     return true;
   });
   sortFiltered();
@@ -1536,7 +1557,7 @@ function findSimilar(t, k = 12) {
 // ===========================================================================
 //  Playlists tab
 // ===========================================================================
-function makePlaylistCard({ title, sub, active, href, onClick }) {
+function makePlaylistCard({ title, sub, active, href, onClick, tooltip }) {
   const el = href ? document.createElement('a') : document.createElement('button');
   el.className = 'playlist-card' + (active ? ' active' : '') + (href ? ' pc-external' : '');
   if (href) {
@@ -1546,6 +1567,7 @@ function makePlaylistCard({ title, sub, active, href, onClick }) {
   } else {
     el.type = 'button';
   }
+  if (tooltip) el.title = tooltip;
   const titleEl = document.createElement('div');
   titleEl.className = 'pc-title';
   titleEl.textContent = title;
@@ -1558,12 +1580,23 @@ function makePlaylistCard({ title, sub, active, href, onClick }) {
   return el;
 }
 
-function makePlaylistSection(label, cardEls) {
+function makePlaylistSection(label, cardEls, headerLink) {
   const sec = document.createElement('div');
   sec.className = 'playlist-section';
   const lbl = document.createElement('div');
   lbl.className = 'filter-label';
-  lbl.textContent = label;
+  const labelText = document.createElement('span');
+  labelText.textContent = label;
+  lbl.appendChild(labelText);
+  if (headerLink) {
+    const a = document.createElement('a');
+    a.href = headerLink.href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = headerLink.text;
+    a.style.cssText = 'color:var(--accent);text-transform:none;letter-spacing:0;text-decoration:none;font-size:11px;font-weight:500';
+    lbl.appendChild(a);
+  }
   sec.appendChild(lbl);
   const grid = document.createElement('div');
   grid.className = 'playlist-grid';
@@ -1577,9 +1610,43 @@ function loadPlaylist(kind, value) {
   STATE.filters.projects = new Set();
   STATE.filters.year = null;
   STATE.filters.sessions = new Set();
+  STATE.filters.urls = null;
+  STATE.filters.activePlaylistUrl = null;
   if (kind === 'project') STATE.filters.projects.add(value);
   else if (kind === 'year') STATE.filters.year = value;
   else if (kind === 'session') STATE.filters.sessions.add(value);
+  applyFilters();
+  renderPlaylists();
+  activateTab('queue');
+}
+
+// Resolve a playlist track {id, url} (or bare URL string for old data) to a
+// catalog URL by matching either id or url against STATE.tracks.
+function resolvePlaylistTracks(plTracks) {
+  const byId = new Map();
+  const byUrl = new Map();
+  for (const t of STATE.tracks) {
+    if (t.id) byId.set(String(t.id), t.url);
+    if (t.url) byUrl.set(t.url, t.url);
+  }
+  const out = new Set();
+  for (const entry of plTracks || []) {
+    if (typeof entry === 'string') {
+      if (byUrl.has(entry)) out.add(entry);
+      continue;
+    }
+    if (entry.id && byId.has(String(entry.id))) { out.add(byId.get(String(entry.id))); continue; }
+    if (entry.url && byUrl.has(entry.url)) { out.add(entry.url); continue; }
+  }
+  return out;
+}
+
+function loadSCPlaylist(pl) {
+  STATE.filters.projects = new Set();
+  STATE.filters.year = null;
+  STATE.filters.sessions = new Set();
+  STATE.filters.urls = resolvePlaylistTracks(pl.tracks);
+  STATE.filters.activePlaylistUrl = pl.url;
   applyFilters();
   renderPlaylists();
   activateTab('queue');
@@ -1591,13 +1658,34 @@ function renderPlaylists() {
   el.innerHTML = '';
   const F = STATE.filters;
 
-  // 1. SoundCloud collections (always)
-  el.appendChild(makePlaylistSection('SoundCloud collections', [
-    makePlaylistCard({ title: 'Albums', sub: 'open on soundcloud',
-      href: 'https://soundcloud.com/dj-phyzk/albums' }),
-    makePlaylistCard({ title: 'Sets', sub: 'open on soundcloud',
-      href: 'https://soundcloud.com/dj-phyzk/sets' }),
-  ]));
+  // 1. Scraped SoundCloud sets & albums — one card per playlist, click loads as queue
+  if (STATE.playlists.length > 0) {
+    const cards = STATE.playlists.map(pl => {
+      const playable = resolvePlaylistTracks(pl.tracks).size;
+      const subParts = [pl.type, `${pl.track_count} tracks`];
+      if (playable !== pl.track_count) subParts.push(`${playable} playable`);
+      return makePlaylistCard({
+        title: pl.name,
+        sub: subParts.join(' · '),
+        active: F.activePlaylistUrl === pl.url,
+        tooltip: pl.url,
+        onClick: () => loadSCPlaylist(pl),
+      });
+    });
+    el.appendChild(makePlaylistSection(
+      `SoundCloud sets & albums (${STATE.playlists.length})`,
+      cards,
+      { href: 'https://soundcloud.com/dj-phyzk/sets', text: 'view all on soundcloud ↗' },
+    ));
+  } else {
+    // Fallback: no scraped data — link out to the SC pages.
+    el.appendChild(makePlaylistSection('SoundCloud collections', [
+      makePlaylistCard({ title: 'Albums', sub: 'open on soundcloud',
+        href: 'https://soundcloud.com/dj-phyzk/albums' }),
+      makePlaylistCard({ title: 'Sets', sub: 'open on soundcloud',
+        href: 'https://soundcloud.com/dj-phyzk/sets' }),
+    ]));
+  }
 
   // 2. By Project — only if any tracks carry Project data (Airtable only)
   const projCounts = new Map();
@@ -1914,8 +2002,9 @@ function setStatus(msg, isError = false) {
 // ===========================================================================
 async function boot() {
   drawWheel();
-  // Always try static tracks.json first — works for public embeds with zero config.
-  await loadStaticTracks();
+  // Static catalog + scraped SoundCloud playlists load in parallel (independent).
+  await Promise.all([loadStaticTracks(), loadPlaylistsCatalog()]);
+  renderPlaylists();
   // If the user has a PAT, refresh with live Airtable data (gets tags + session names).
   if (STATE.cfg.pat) loadAll();
 }
