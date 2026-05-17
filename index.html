@@ -506,6 +506,57 @@
     width: 12px; height: 12px; border-radius: 3px;
   }
 
+  /* ---------- Playlists ---------- */
+  .playlist-section { margin-bottom: 24px; }
+  .playlist-section .filter-label { margin-bottom: 10px; }
+  .playlist-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 8px;
+  }
+  .playlist-card {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 12px 14px;
+    border-radius: 8px;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.12s;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    text-decoration: none;
+    font-family: inherit;
+    min-width: 0;
+  }
+  .playlist-card:hover {
+    background: var(--bg-elev-2);
+    border-color: var(--accent);
+    transform: translateY(-1px);
+  }
+  .playlist-card.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+  }
+  .pc-title {
+    font-size: 13px; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pc-sub {
+    font-size: 10px; color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pc-external { position: relative; padding-right: 28px; }
+  .pc-external::after {
+    content: '↗';
+    position: absolute; top: 10px; right: 12px;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .pc-external:hover::after { color: var(--accent); }
+
   /* ---------- Loading ---------- */
   .loading {
     display: flex; align-items: center; gap: 10px;
@@ -560,6 +611,7 @@
       <div class="tabs">
         <button class="tab active" data-tab="queue">Queue <span class="tab-count" id="tab-count-queue">0</span></button>
         <button class="tab" data-tab="filters">Filters</button>
+        <button class="tab" data-tab="playlists">Playlists</button>
         <button class="tab" data-tab="similar">Similar</button>
         <button class="tab" data-tab="wheel">Wheel</button>
       </div>
@@ -643,6 +695,10 @@
 
           <button class="filter-reset" id="filter-reset">Reset all filters</button>
         </div>
+      </div>
+
+      <div class="tab-panel" data-tab="playlists">
+        <div class="tab-panel-inner" id="playlists-content"></div>
       </div>
 
       <div class="tab-panel" data-tab="similar">
@@ -788,6 +844,8 @@ const STATE = {
     keys: new Set(),     // selected "Key Scale" strings
     tags: new Set(),     // selected tag record IDs
     sessions: new Set(), // selected session record IDs
+    projects: new Set(), // selected project names (from Airtable Project field)
+    year: null,          // selected upload year, e.g. "2024"
   },
   sort: { field: 'bpm', dir: 'asc' },
 };
@@ -867,6 +925,7 @@ function normalizeTrack(r) {
     spectralCentroid: f['Spectral Centroid'] || 0,
     tags: f['Tags'] || [],
     session: f['Session'] || [],
+    project: (f['Project'] || []).map(p => typeof p === 'string' ? { id: p, name: p } : { id: p.id, name: p.name }),
   };
 }
 
@@ -889,6 +948,7 @@ function normalizeJsonTrack(t) {
     spectralCentroid: t.spectral_centroid || 0,
     tags: [],
     session: [],
+    project: [],
   };
 }
 
@@ -1044,6 +1104,7 @@ function rebuildFilters() {
   updateKeyDisplay();
   renderTagChips();
   renderSessionChips('');
+  renderPlaylists();
 }
 
 function updateKeyDisplay() {
@@ -1212,6 +1273,8 @@ document.getElementById('filter-reset').onclick = () => {
     keys: new Set(),
     tags: new Set(),
     sessions: new Set(),
+    projects: new Set(),
+    year: null,
   };
   document.getElementById('f-search').value = '';
   document.getElementById('f-session-search').value = '';
@@ -1230,6 +1293,7 @@ document.getElementById('filter-reset').onclick = () => {
   updateTagDisplay();
   updateSessionDisplay();
   renderSessionChips('');
+  renderPlaylists();
   applyFilters();
 };
 
@@ -1249,6 +1313,8 @@ function applyFilters() {
     }
     if (F.tags.size > 0 && !t.tags.some(id => F.tags.has(id))) return false;
     if (F.sessions.size > 0 && !t.session.some(id => F.sessions.has(id))) return false;
+    if (F.projects.size > 0 && !(t.project || []).some(p => F.projects.has(p.name))) return false;
+    if (F.year && !(t.uploadDate || '').startsWith(F.year)) return false;
     return true;
   });
   sortFiltered();
@@ -1465,6 +1531,134 @@ function findSimilar(t, k = 12) {
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, k);
+}
+
+// ===========================================================================
+//  Playlists tab
+// ===========================================================================
+function makePlaylistCard({ title, sub, active, href, onClick }) {
+  const el = href ? document.createElement('a') : document.createElement('button');
+  el.className = 'playlist-card' + (active ? ' active' : '') + (href ? ' pc-external' : '');
+  if (href) {
+    el.href = href;
+    el.target = '_blank';
+    el.rel = 'noopener noreferrer';
+  } else {
+    el.type = 'button';
+  }
+  const titleEl = document.createElement('div');
+  titleEl.className = 'pc-title';
+  titleEl.textContent = title;
+  el.appendChild(titleEl);
+  const subEl = document.createElement('div');
+  subEl.className = 'pc-sub';
+  subEl.textContent = sub;
+  el.appendChild(subEl);
+  if (onClick) el.addEventListener('click', onClick);
+  return el;
+}
+
+function makePlaylistSection(label, cardEls) {
+  const sec = document.createElement('div');
+  sec.className = 'playlist-section';
+  const lbl = document.createElement('div');
+  lbl.className = 'filter-label';
+  lbl.textContent = label;
+  sec.appendChild(lbl);
+  const grid = document.createElement('div');
+  grid.className = 'playlist-grid';
+  for (const c of cardEls) grid.appendChild(c);
+  sec.appendChild(grid);
+  return sec;
+}
+
+function loadPlaylist(kind, value) {
+  // Clears any prior playlist-style filter, applies the new one, jumps to queue.
+  STATE.filters.projects = new Set();
+  STATE.filters.year = null;
+  STATE.filters.sessions = new Set();
+  if (kind === 'project') STATE.filters.projects.add(value);
+  else if (kind === 'year') STATE.filters.year = value;
+  else if (kind === 'session') STATE.filters.sessions.add(value);
+  applyFilters();
+  renderPlaylists();
+  activateTab('queue');
+}
+
+function renderPlaylists() {
+  const el = document.getElementById('playlists-content');
+  if (!el) return;
+  el.innerHTML = '';
+  const F = STATE.filters;
+
+  // 1. SoundCloud collections (always)
+  el.appendChild(makePlaylistSection('SoundCloud collections', [
+    makePlaylistCard({ title: 'Albums', sub: 'open on soundcloud',
+      href: 'https://soundcloud.com/dj-phyzk/albums' }),
+    makePlaylistCard({ title: 'Sets', sub: 'open on soundcloud',
+      href: 'https://soundcloud.com/dj-phyzk/sets' }),
+  ]));
+
+  // 2. By Project — only if any tracks carry Project data (Airtable only)
+  const projCounts = new Map();
+  for (const t of STATE.tracks) {
+    for (const p of (t.project || [])) {
+      if (p.name) projCounts.set(p.name, (projCounts.get(p.name) || 0) + 1);
+    }
+  }
+  if (projCounts.size > 0) {
+    const cards = Array.from(projCounts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([name, n]) => makePlaylistCard({
+        title: name,
+        sub: `${n} track${n === 1 ? '' : 's'}`,
+        active: F.projects.has(name),
+        onClick: () => loadPlaylist('project', name),
+      }));
+    el.appendChild(makePlaylistSection('By project', cards));
+  }
+
+  // 3. By Year — always (works from static catalog too)
+  const yearCounts = new Map();
+  for (const t of STATE.tracks) {
+    const yr = (t.uploadDate || '').slice(0, 4);
+    if (/^\d{4}$/.test(yr)) yearCounts.set(yr, (yearCounts.get(yr) || 0) + 1);
+  }
+  if (yearCounts.size > 0) {
+    const cards = Array.from(yearCounts.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([year, n]) => makePlaylistCard({
+        title: year,
+        sub: `${n} track${n === 1 ? '' : 's'}`,
+        active: F.year === year,
+        onClick: () => loadPlaylist('year', year),
+      }));
+    el.appendChild(makePlaylistSection('By year', cards));
+  }
+
+  // 4. By Session — only when Airtable session data is loaded; cap at top 24 by count
+  if (STATE.sessionsById && STATE.sessionsById.size > 0) {
+    const sessCounts = new Map();
+    for (const t of STATE.tracks) {
+      for (const id of (t.session || [])) {
+        sessCounts.set(id, (sessCounts.get(id) || 0) + 1);
+      }
+    }
+    const top = Array.from(sessCounts.entries())
+      .map(([id, n]) => ({ id, n, info: STATE.sessionsById.get(id) }))
+      .filter(s => s.info)
+      .sort((a, b) => b.n - a.n || (b.info.date || '').localeCompare(a.info.date || ''))
+      .slice(0, 24);
+    if (top.length > 0) {
+      const cards = top.map(({ id, n, info }) => makePlaylistCard({
+        title: info.name || '(unnamed)',
+        sub: `${n} track${n === 1 ? '' : 's'}${info.date ? ' · ' + info.date : ''}`,
+        active: F.sessions.has(id),
+        onClick: () => loadPlaylist('session', id),
+      }));
+      el.appendChild(makePlaylistSection('By session', cards));
+    }
+  }
 }
 
 function renderSimilar() {
@@ -1695,6 +1889,7 @@ function activateTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => {
     p.classList.toggle('active', p.dataset.tab === name);
   });
+  if (name === 'playlists') renderPlaylists();
 }
 document.querySelectorAll('.tab').forEach(t => {
   t.onclick = () => activateTab(t.dataset.tab);
