@@ -736,6 +736,28 @@ function camelotOf(key, scale) {
   if (!key || !scale) return null;
   return CAMELOT[`${key} ${scale}`] || null;
 }
+
+// Compact musical label: "F minor" → "Fmin", "A major" → "Amaj"
+function keyLabel(key, scale) {
+  if (!key || !scale) return '—';
+  return `${key}${scale === 'major' ? 'maj' : 'min'}`;
+}
+
+// Display string for each Camelot wheel slice (one canonical key per code)
+const CAMELOT_DISPLAY = {
+  '1A':'Abmin','1B':'Bmaj',
+  '2A':'Ebmin','2B':'F#maj',
+  '3A':'Bbmin','3B':'Dbmaj',
+  '4A':'Fmin', '4B':'Abmaj',
+  '5A':'Cmin', '5B':'Ebmaj',
+  '6A':'Gmin', '6B':'Bbmaj',
+  '7A':'Dmin', '7B':'Fmaj',
+  '8A':'Amin', '8B':'Cmaj',
+  '9A':'Emin', '9B':'Gmaj',
+  '10A':'Bmin','10B':'Dmaj',
+  '11A':'F#min','11B':'Amaj',
+  '12A':'C#min','12B':'Emaj',
+};
 function camelotCompatible(c) {
   if (!c) return new Set();
   const n = parseInt(c, 10);
@@ -1005,10 +1027,10 @@ function rebuildFilters() {
   const keyChipsEl = document.getElementById('f-key-chips');
   keyChipsEl.innerHTML = '';
   for (const k of keys) {
-    const ca = camelotOf(...k.split(' '));
+    const [keyName, scaleName] = k.split(' ');
     const chip = document.createElement('button');
     chip.className = 'chip';
-    chip.textContent = `${ca || '?'} · ${k}`;
+    chip.textContent = keyLabel(keyName, scaleName);
     chip.dataset.key = k;
     chip.onclick = () => {
       if (STATE.filters.keys.has(k)) STATE.filters.keys.delete(k);
@@ -1292,7 +1314,7 @@ function renderQueue() {
         <div class="track-title">${escapeHtml(t.title)}</div>
         <div class="track-sub">${formatSub(t)}</div>
       </div>
-      <div class="track-camelot">${t.camelot || '—'}</div>
+      <div class="track-camelot">${keyLabel(t.key, t.scale)}</div>
       <div class="track-bpm">${t.bpm ? t.bpm.toFixed(0) : '—'}</div>
       <div class="track-energy-cell">
         <span class="energy-dot" style="color:${energyColor(t.energy)};opacity:${0.3 + 0.7 * t.energy}"></span>${(t.energy || 0).toFixed(2)}
@@ -1373,8 +1395,7 @@ function renderNowPlaying(t) {
       ${t.duration ? ' • ' + formatDuration(t.duration) : ''}
     </div>
     <div class="np-stats">
-      <div class="stat"><span class="stat-label">key</span> <span class="stat-key">${t.key || '?'} ${t.scale || ''}</span></div>
-      <div class="stat"><span class="stat-label">camelot</span> <span class="stat-camelot">${t.camelot || '—'}</span></div>
+      <div class="stat"><span class="stat-label">key</span> <span class="stat-key">${keyLabel(t.key, t.scale)}</span></div>
       <div class="stat"><span class="stat-label">bpm</span> <span class="stat-bpm">${t.bpm ? t.bpm.toFixed(1) : '—'}</span></div>
       <div class="stat"><span class="stat-label">lufs</span> ${t.loudness ? t.loudness.toFixed(1) : '—'}</div>
     </div>
@@ -1468,7 +1489,7 @@ function renderSimilar() {
         <div class="track-title">${escapeHtml(track.title)}</div>
         <div class="track-sub">${formatSub(track)}</div>
       </div>
-      <div class="track-camelot">${track.camelot || '—'}</div>
+      <div class="track-camelot">${keyLabel(track.key, track.scale)}</div>
       <div class="track-bpm">${track.bpm ? track.bpm.toFixed(0) : '—'}</div>
       <div class="similar-pct">${Math.round(score * 100)}%</div>
     </div>
@@ -1513,7 +1534,7 @@ function drawWheel() {
   html += `<circle class="wheel-center" cx="0" cy="0" r="${R_IN}"/>`;
   if (cur) {
     html += `<text class="wheel-center-text" x="0" y="-8">Current</text>`;
-    html += `<text class="wheel-center-text" x="0" y="6" style="font-size:18px;fill:var(--accent);font-weight:700">${cur}</text>`;
+    html += `<text class="wheel-center-text" x="0" y="8" style="font-size:16px;fill:var(--accent);font-weight:700">${CAMELOT_DISPLAY[cur] || cur}</text>`;
   } else {
     html += `<text class="wheel-center-text" x="0" y="0">Pick a track</text>`;
   }
@@ -1560,12 +1581,13 @@ function slice(a0, a1, rIn, rOut, code, kind, compat, current, counts) {
   if (code === current) cls.push('current');
   else if (compat.has(code)) cls.push('compatible');
   const count = counts.get(code) || 0;
+  const display = CAMELOT_DISPLAY[code] || code;
   const countText = count > 0 ? `<text class="wheel-label dim" x="${lx}" y="${ly + 10}" style="font-size:8px">${count}</text>` : '';
   return `
     <path class="${cls.join(' ')}" d="${path}" data-code="${code}">
-      <title>${code} · ${count} tracks</title>
+      <title>${display} · ${count} tracks</title>
     </path>
-    <text class="wheel-label" x="${lx}" y="${ly}">${code}</text>
+    <text class="wheel-label" x="${lx}" y="${ly}" style="font-size:9px">${display}</text>
     ${countText}
   `;
 }
