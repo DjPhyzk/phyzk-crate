@@ -303,6 +303,21 @@
     width: 100%; margin-top: 4px;
   }
   .filter-reset:hover { color: var(--text); border-color: var(--accent); }
+  .filter-results-divider {
+    margin: 24px -16px 0;
+    padding: 10px 16px 8px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elev);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  #filters-results { margin: 0 -16px; }
   .sort-row {
     display: flex; gap: 6px; align-items: center; margin-bottom: 12px;
     font-size: 11px;
@@ -728,6 +743,11 @@
           </div>
 
           <button class="filter-reset" id="filter-reset">Reset all filters</button>
+
+          <div class="filter-results-divider">
+            <span id="filters-result-count">— tracks</span>
+          </div>
+          <div id="filters-results"></div>
         </div>
       </div>
 
@@ -1446,31 +1466,37 @@ function sortFiltered() {
 // ===========================================================================
 function renderQueue() {
   document.getElementById('tab-count-queue').textContent = STATE.filtered.length;
-  const container = document.getElementById('queue-content');
+  const frc = document.getElementById('filters-result-count');
+  if (frc) {
+    const total = STATE.tracks.length;
+    const shown = STATE.filtered.length;
+    frc.textContent = shown === total ? `all ${total} tracks` : `${shown} of ${total} tracks`;
+  }
+  // Render the same track list into both the Queue tab and the Filters tab so
+  // the user sees filter effects in place while tweaking controls.
+  renderTrackListInto(document.getElementById('queue-content'));
+  const fr = document.getElementById('filters-results');
+  if (fr) renderTrackListInto(fr);
+  wireSortHandlers();
+}
+
+function renderTrackListInto(container) {
+  if (!container) return;
   const cur = STATE.current?.id;
-  const SORT_FIELDS = [
-    ['', ''], ['title', 'Title'], ['bpm', 'BPM'], ['energy', 'Energy'], ['camelot', 'Key']
-  ];
+  const arrow = field =>
+    STATE.sort.field === field ? (STATE.sort.dir === 'asc' ? ' ↑' : ' ↓') : '';
+  const sortedClass = field => STATE.sort.field === field ? ' sorted' : '';
   const headerHtml = `
     <div class="track-list-header">
       <div></div>
-      <div data-sort="title" class="${STATE.sort.field === 'title' ? 'sorted' : ''}">
-        Title ${STATE.sort.field === 'title' ? (STATE.sort.dir === 'asc' ? '↑' : '↓') : ''}
-      </div>
-      <div data-sort="camelot" style="text-align:center" class="${STATE.sort.field === 'camelot' ? 'sorted' : ''}">
-        Key ${STATE.sort.field === 'camelot' ? (STATE.sort.dir === 'asc' ? '↑' : '↓') : ''}
-      </div>
-      <div data-sort="bpm" style="text-align:right" class="${STATE.sort.field === 'bpm' ? 'sorted' : ''}">
-        BPM ${STATE.sort.field === 'bpm' ? (STATE.sort.dir === 'asc' ? '↑' : '↓') : ''}
-      </div>
-      <div data-sort="energy" style="text-align:right" class="${STATE.sort.field === 'energy' ? 'sorted' : ''}">
-        E ${STATE.sort.field === 'energy' ? (STATE.sort.dir === 'asc' ? '↑' : '↓') : ''}
-      </div>
+      <div data-sort="title" class="${sortedClass('title').trim()}">Title${arrow('title')}</div>
+      <div data-sort="camelot" style="text-align:center" class="${sortedClass('camelot').trim()}">Key${arrow('camelot')}</div>
+      <div data-sort="bpm" style="text-align:right" class="${sortedClass('bpm').trim()}">BPM${arrow('bpm')}</div>
+      <div data-sort="energy" style="text-align:right" class="${sortedClass('energy').trim()}">E${arrow('energy')}</div>
     </div>`;
 
   if (!STATE.filtered.length) {
     container.innerHTML = headerHtml + '<div class="loading">No tracks match these filters.</div>';
-    wireSortHandlers();
     return;
   }
 
@@ -1497,7 +1523,6 @@ function renderQueue() {
       if (t) play(t);
     });
   });
-  wireSortHandlers();
 }
 
 function wireSortHandlers() {
