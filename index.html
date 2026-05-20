@@ -447,10 +447,16 @@
     background-clip: text; color: transparent;
   }
   .modal p {
-    margin: 0 0 20px; color: var(--text-dim); font-size: 12px; line-height: 1.5;
+    margin: 0 0 14px; color: var(--text-dim); font-size: 12px; line-height: 1.5;
   }
   .modal p a { color: var(--accent); text-decoration: none; }
   .modal p a:hover { text-decoration: underline; }
+  .modal ul {
+    margin: 0 0 16px; padding-left: 18px;
+    color: var(--text-dim); font-size: 12px; line-height: 1.6;
+  }
+  .modal li { margin-bottom: 6px; }
+  .modal li strong { color: var(--text); font-weight: 600; }
   .form-row { margin-bottom: 14px; }
   .form-row label {
     display: block; font-size: 10px;
@@ -645,7 +651,7 @@
       <button class="icon-btn" id="playpause-btn" title="Play / Pause (space)">▶</button>
       <button class="icon-btn" id="next-btn" title="Next (→)">⏭</button>
       <button class="icon-btn" id="refresh-btn" title="Refresh from Airtable">↻</button>
-      <button class="icon-btn" id="settings-btn" title="Settings">⚙</button>
+      <button class="icon-btn" id="about-btn" title="About">ⓘ</button>
     </div>
   </div>
 
@@ -795,29 +801,19 @@
   </div>
 </div>
 
-<!-- Settings modal -->
-<div class="modal-backdrop hidden" id="settings-modal">
+<!-- About modal -->
+<div class="modal-backdrop hidden" id="about-modal">
   <div class="modal">
-    <h2>Settings</h2>
-    <p>
-      The player works without any credentials — it loads from the static <code>tracks.json</code> catalog.
-      Adding an Airtable token enables live data with tag and session names. Credentials are stored only
-      in your browser's <code>localStorage</code>. Create a token at
-      <a href="https://airtable.com/create/tokens" target="_blank">airtable.com/create/tokens</a>
-      with scopes <code>data.records:read</code> and <code>schema.bases:read</code> for base
-      <code>app6VzFBK4YEvHJ3H</code>.
-    </p>
-    <div class="form-row">
-      <label>Airtable Personal Access Token</label>
-      <input class="input" type="password" id="cfg-pat" placeholder="pat..." autocomplete="off" />
-    </div>
-    <div class="form-row">
-      <label>Base ID · Table ID</label>
-      <input class="input" type="text" id="cfg-base" value="app6VzFBK4YEvHJ3H/tblX6RH8URgzxs3ty" />
-    </div>
+    <h2>About</h2>
+    <p>A DJ-style explorer for my SoundCloud library. Every track is analyzed for BPM, musical key, energy, danceability, loudness, and spectral brightness, then indexed in Airtable.</p>
+    <ul>
+      <li><strong>Filters</strong> narrow the catalog by any dimension — plus tags, sessions, and SoundCloud playlists.</li>
+      <li>The <strong>Camelot wheel</strong> highlights harmonic-compatible neighbors of the current track for set-building.</li>
+      <li><strong>Similar</strong> ranks tracks by timbre fingerprint (MFCC distance) to surface sonically related cuts.</li>
+      <li>Tracks play inline from SoundCloud or YouTube and auto-advance through the queue.</li>
+    </ul>
     <div class="form-actions">
-      <button class="btn" id="settings-cancel">Cancel</button>
-      <button class="btn btn-primary" id="settings-save">Save & load</button>
+      <button class="btn btn-primary" id="about-close">Close</button>
     </div>
   </div>
 </div>
@@ -957,27 +953,14 @@ function saveCfg(cfg) {
 }
 
 // ===========================================================================
-//  Settings modal
+//  About modal
 // ===========================================================================
-const modal = document.getElementById('settings-modal');
-function openSettings() {
-  document.getElementById('cfg-pat').value = STATE.cfg.pat || '';
-  document.getElementById('cfg-base').value =
-    `${STATE.cfg.baseId || 'app6VzFBK4YEvHJ3H'}/${STATE.cfg.tableId || 'tblX6RH8URgzxs3ty'}`;
-  modal.classList.remove('hidden');
-}
-function closeSettings() { modal.classList.add('hidden'); }
-document.getElementById('settings-btn').onclick = openSettings;
-document.getElementById('settings-cancel').onclick = closeSettings;
-document.getElementById('settings-save').onclick = () => {
-  const pat = document.getElementById('cfg-pat').value.trim();
-  const baseInput = document.getElementById('cfg-base').value.trim().split('/');
-  const baseId = baseInput[0] || 'app6VzFBK4YEvHJ3H';
-  const tableId = baseInput[1] || 'tblX6RH8URgzxs3ty';
-  saveCfg({ pat, baseId, tableId });
-  closeSettings();
-  if (pat) loadAll();
-};
+const aboutModal = document.getElementById('about-modal');
+function openAbout() { aboutModal.classList.remove('hidden'); }
+function closeAbout() { aboutModal.classList.add('hidden'); }
+document.getElementById('about-btn').onclick = openAbout;
+document.getElementById('about-close').onclick = closeAbout;
+aboutModal.addEventListener('click', e => { if (e.target === aboutModal) closeAbout(); });
 
 // ===========================================================================
 //  Airtable fetch
@@ -1152,7 +1135,7 @@ async function loadAll() {
     // Only wipe the queue if we have no static fallback either
     if (STATE.tracks.length === 0) {
       document.getElementById('queue-content').innerHTML =
-        `<div class="loading">Could not load tracks. Check your PAT in Settings.<br><small>${e.message}</small></div>`;
+        `<div class="loading">Could not load tracks.<br><small>${e.message}</small></div>`;
     }
   }
 }
