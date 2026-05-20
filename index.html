@@ -656,6 +656,7 @@
       </div>
       <div class="sc-wrap" id="sc-wrap" style="display: none;">
         <iframe id="sc-player" width="100%" height="120" scrolling="no" frameborder="no" allow="autoplay"></iframe>
+        <iframe id="yt-player" width="100%" height="220" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen style="display: none;"></iframe>
       </div>
       <div class="tabs">
         <button class="tab active" data-tab="queue">Queue <span class="tab-count" id="tab-count-queue">0</span></button>
@@ -925,7 +926,9 @@ const STATE = {
   mfccById: null,        // optional, from ../tracks.json
   filtered: [],
   current: null,
-  widget: null,
+  widget: null,          // SC.Widget instance (SoundCloud)
+  ytPlayer: null,        // YT.Player instance (YouTube)
+  playerKind: null,      // 'soundcloud' | 'youtube'
   isPlaying: false,
   filters: {
     search: '',
@@ -2002,41 +2005,109 @@ function slice(a0, a1, rIn, rOut, code, kind, compat, current, counts) {
 }
 
 // ===========================================================================
-//  SoundCloud playback
+//  Playback (SoundCloud + YouTube)
 // ===========================================================================
+function playerKindFromUrl(url) {
+  if (!url) return null;
+  if (/soundcloud\.com/i.test(url)) return 'soundcloud';
+  if (/(?:youtube\.com|youtu\.be)/i.test(url)) return 'youtube';
+  return null;
+}
+
+function youtubeIdFromUrl(url) {
+  if (!url) return null;
+  let m = url.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  m = url.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  m = url.match(/youtube\.com\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  return null;
+}
+
+let _ytApiPromise = null;
+function ensureYouTubeApi() {
+  if (_ytApiPromise) return _ytApiPromise;
+  _ytApiPromise = new Promise(resolve => {
+    if (window.YT && window.YT.Player) { resolve(); return; }
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { if (prev) try { prev(); } catch {} resolve(); };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(s);
+  });
+  return _ytApiPromise;
+}
+
+function onYtStateChange(e) {
+  // YT.PlayerState: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
+  if (e.data === 0) playNext();
+  else if (e.data === 1) {
+    setPlayingIcon(true);
+    setStatus(`Playing · ${STATE.current?.title || ''}`);
+  } else if (e.data === 2) {
+    setPlayingIcon(false);
+    setStatus(`Paused · ${STATE.current?.title || ''}`);
+  }
+}
+
 function play(t) {
   STATE.current = t;
   const wrap = document.getElementById('sc-wrap');
-  const iframe = document.getElementById('sc-player');
-  const params = new URLSearchParams({
-    url: t.url,
-    auto_play: 'true',
-    show_artwork: 'true',
-    show_user: 'false',
-    show_comments: 'false',
-    show_teaser: 'false',
-    visual: 'false',
-    hide_related: 'true',
-    color: '00d4ff',
-  });
-  iframe.src = `https://w.soundcloud.com/player/?${params}`;
+  const scIframe = document.getElementById('sc-player');
+  const ytIframe = document.getElementById('yt-player');
+  const kind = playerKindFromUrl(t.url) || 'soundcloud';
+  STATE.playerKind = kind;
   wrap.style.display = '';
 
-  if (!STATE.widget) {
-    iframe.onload = () => {
-      STATE.widget = SC.Widget(iframe);
-      STATE.widget.bind(SC.Widget.Events.FINISH, playNext);
-      STATE.widget.bind(SC.Widget.Events.PLAY, () => {
-        setPlayingIcon(true);
-        setStatus(`Playing · ${STATE.current?.title || ''}`);
+  if (kind === 'youtube') {
+    scIframe.style.display = 'none';
+    ytIframe.style.display = '';
+    if (STATE.widget) { try { STATE.widget.pause(); } catch {} }
+    const id = youtubeIdFromUrl(t.url);
+    if (!id) { setStatus(`Bad YouTube URL: ${t.url}`, true); return; }
+    if (!STATE.ytPlayer) {
+      ytIframe.src = `https://www.youtube.com/embed/${id}?enablejsapi=1&autoplay=1&rel=0&playsinline=1&origin=${encodeURIComponent(location.origin)}`;
+      ensureYouTubeApi().then(() => {
+        STATE.ytPlayer = new YT.Player('yt-player', {
+          events: { onStateChange: onYtStateChange },
+        });
       });
-      STATE.widget.bind(SC.Widget.Events.PAUSE, () => {
-        setPlayingIcon(false);
-        setStatus(`Paused · ${STATE.current?.title || ''}`);
-      });
-    };
+    } else {
+      STATE.ytPlayer.loadVideoById(id);
+    }
   } else {
-    setStatus(`Playing · ${t.title}`);
+    ytIframe.style.display = 'none';
+    scIframe.style.display = '';
+    if (STATE.ytPlayer) { try { STATE.ytPlayer.pauseVideo(); } catch {} }
+    const params = new URLSearchParams({
+      url: t.url,
+      auto_play: 'true',
+      show_artwork: 'true',
+      show_user: 'false',
+      show_comments: 'false',
+      show_teaser: 'false',
+      visual: 'false',
+      hide_related: 'true',
+      color: '00d4ff',
+    });
+    scIframe.src = `https://w.soundcloud.com/player/?${params}`;
+    if (!STATE.widget) {
+      scIframe.onload = () => {
+        STATE.widget = SC.Widget(scIframe);
+        STATE.widget.bind(SC.Widget.Events.FINISH, playNext);
+        STATE.widget.bind(SC.Widget.Events.PLAY, () => {
+          setPlayingIcon(true);
+          setStatus(`Playing · ${STATE.current?.title || ''}`);
+        });
+        STATE.widget.bind(SC.Widget.Events.PAUSE, () => {
+          setPlayingIcon(false);
+          setStatus(`Paused · ${STATE.current?.title || ''}`);
+        });
+      };
+    } else {
+      setStatus(`Playing · ${t.title}`);
+    }
   }
 
   renderNowPlaying(t);
@@ -2079,6 +2150,13 @@ function setPlayingIcon(playing) {
   playPauseBtn.classList.toggle('playing', playing);
 }
 playPauseBtn.onclick = () => {
+  if (STATE.playerKind === 'youtube') {
+    if (!STATE.ytPlayer) return; // still loading; autoplay will kick in
+    const s = STATE.ytPlayer.getPlayerState ? STATE.ytPlayer.getPlayerState() : -1;
+    if (s === 1) STATE.ytPlayer.pauseVideo();
+    else STATE.ytPlayer.playVideo();
+    return;
+  }
   if (!STATE.widget) {
     // No track loaded yet — start with first in the filtered queue
     if (STATE.filtered.length) play(STATE.filtered[0]);
