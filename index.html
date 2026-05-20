@@ -764,7 +764,7 @@
 
       <div class="tab-panel" data-tab="similar">
         <div id="similar-content">
-          <div class="similar-empty">Play a track to surface similar tracks ranked by Camelot proximity, BPM, and timbre.</div>
+          <div class="similar-empty">Play a track to surface similar tracks ranked by Circle of 5ths proximity, BPM, and timbre.</div>
         </div>
       </div>
 
@@ -808,10 +808,12 @@
     <p>A DJ-style explorer for my SoundCloud library. Every track is analyzed for BPM, musical key, energy, danceability, loudness, and spectral brightness, then indexed in Airtable.</p>
     <ul>
       <li><strong>Filters</strong> narrow the catalog by any dimension — plus tags, sessions, and SoundCloud playlists.</li>
-      <li>The <strong>Camelot wheel</strong> highlights harmonic-compatible neighbors of the current track for set-building.</li>
+      <li>The <strong>Circle of 5ths</strong> highlights harmonic-compatible neighbors of the current track for set-building.</li>
       <li><strong>Similar</strong> ranks tracks by timbre fingerprint (MFCC distance) to surface sonically related cuts.</li>
       <li>Tracks play inline from SoundCloud or YouTube and auto-advance through the queue.</li>
     </ul>
+    <p><strong>The path:</strong> Airtable&nbsp;→&nbsp;GitHub&nbsp;→&nbsp;WordPress. The canonical catalog lives in Airtable; a build script exports a filtered <code>tracks.json</code> to this repo, which GitHub Pages serves as a static site. WordPress embeds that build in an iframe.</p>
+    <p>Fork the source at <a href="https://github.com/DjPhyzk/phyzk-crate" target="_blank" rel="noopener">github.com/DjPhyzk/phyzk-crate</a> to build your own.</p>
     <div class="form-actions">
       <button class="btn btn-primary" id="about-close">Close</button>
     </div>
@@ -1865,7 +1867,7 @@ function renderPlaylists() {
 function renderSimilar() {
   const el = document.getElementById('similar-content');
   if (!STATE.current) {
-    el.innerHTML = '<div class="similar-empty">Play a track to surface similar tracks ranked by Camelot proximity, BPM, and timbre.</div>';
+    el.innerHTML = '<div class="similar-empty">Play a track to surface similar tracks ranked by Circle of 5ths proximity, BPM, and timbre.</div>';
     return;
   }
   const ranked = findSimilar(STATE.current);
